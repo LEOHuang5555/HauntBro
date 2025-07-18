@@ -44,19 +44,59 @@ This is currently a minimal project with the following structure:
 
 ## Development Commands
 
+### Environment Setup
+```bash
+# Install dependencies
+poetry install
+
+# Activate virtual environment
+poetry shell
+
+# Or using pip
+pip install -r requirements.txt
+```
+
+### Database Operations
+```bash
+# Initialize database and run migrations
+poetry run alembic upgrade head
+
+# Create a new migration
+poetry run alembic revision --autogenerate -m "description"
+
+# Seed database with test data
+poetry run python database/seed.py
+
+# Clear database
+poetry run python database/seed.py --clear
+
+# Force re-seed (clear and seed)
+poetry run python database/seed.py --force
+```
+
 ### Running the Application
 ```bash
-# Run the main database connection test
-poetry run python get_data_from_ptt_marvel.py
+# Start the FastAPI development server
+poetry run uvicorn main:app --reload
+
+# Or with Python
+poetry run python main.py
+
+# Test database connection
+poetry run python database/connection.py
 ```
 
 ### Development Workflow
-Since this is an early-stage project, most development will involve:
-1. Setting up database connections and testing
-2. Implementing web scraping logic with Scrapy
-3. Data processing and cleaning with Pandas
-4. Building the RAG system for search functionality
-5. Creating the front-end interface
+The project now includes:
+1. ✅ PostgreSQL database schema with core tables
+2. ✅ SQLAlchemy models for all entities
+3. ✅ Alembic migrations for database versioning
+4. ✅ FastAPI-based REST API
+5. ✅ JWT-based authentication system
+6. ✅ Database seeding for testing
+7. 🚧 Web scraping modules (next phase)
+8. 🚧 RAG system for search functionality
+9. 🚧 Front-end interface
 
 ## Database Operations
 The project uses SQLAlchemy for database operations. The main connection is established in `get_data_from_ptt_marvel.py:1-14` using a PostgreSQL database.
