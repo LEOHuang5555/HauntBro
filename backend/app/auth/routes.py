@@ -9,9 +9,9 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
 
-from database.connection import get_db
-from database.models import User
-from auth.models import (
+from app.database.connection import get_db
+from app.database.models import User
+from app.auth.models import (
     AuthManager, UserCreate, UserLogin, UserResponse, Token, TokenData
 )
 
