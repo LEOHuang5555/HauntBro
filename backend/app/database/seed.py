@@ -3,11 +3,16 @@ Database seeding script for HauntBro - Medallion Architecture
 Seeds Bronze-Silver-Gold layers with realistic test data.
 """
 
+import os
 import random
 import re
 from datetime import datetime, timedelta
 from faker import Faker
 from sqlalchemy.orm import Session
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
 
 from database.connection import db_manager, init_database
 from database.models import (
@@ -39,7 +44,7 @@ def seed_users(db: Session, count: int = 15):
         user_data = {
             "username": fake.user_name(),
             "email": fake.email(),
-            "password_hash": AuthManager.get_password_hash("password123"),
+            "password_hash": AuthManager.get_password_hash(os.getenv("TEST_USER_PASSWORD", "password123")),
             "is_active": True,
             "created_at": fake.date_time_between(start_date="-1y", end_date="now"),
             "last_login": fake.date_time_between(start_date="-30d", end_date="now") if random.choice([True, False]) else None
@@ -458,7 +463,7 @@ def seed_database():
         
         print("\nTest user credentials:")
         print("Username: testuser")
-        print("Password: password123")
+        print(f"Password: {os.getenv('TEST_USER_PASSWORD', 'password123')}")
         print("\nYou can now explore the medallion architecture!")
 
 

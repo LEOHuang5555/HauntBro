@@ -121,14 +121,30 @@ celerybeat.pid
 # SageMath parsed files
 *.sage.py
 
-# Environments
+# Environments and secrets
 .env
+.env.local
+.env.development
+.env.production
+.env.staging
+.env.test
+.env.*
+!.env.example
 .venv
 env/
 venv/
 ENV/
 env.bak/
 venv.bak/
+
+# API Keys and secrets (additional protection)
+**/secrets/
+**/.secrets/
+**/config/secrets.json
+**/config/credentials.json
+api_keys.json
+credentials.json
+service-account-key.json
 
 # OS generated files
 .DS_Store

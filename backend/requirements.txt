@@ -27,3 +27,6 @@ tenacity>=8.2.3
 
 # Development and testing
 faker>=20.1.0
+
+# Environment variables
+python-dotenv>=1.0.0

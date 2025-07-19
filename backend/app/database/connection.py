@@ -5,12 +5,16 @@ Database connection and session management for HauntBro.
 import os
 from contextlib import contextmanager
 from typing import Generator
+from dotenv import load_dotenv
 
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker, Session
 from sqlalchemy.pool import StaticPool
 
 from .models import Base
+
+# Load environment variables
+load_dotenv()
 
 
 class DatabaseManager:

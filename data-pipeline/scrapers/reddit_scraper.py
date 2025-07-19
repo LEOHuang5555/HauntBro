@@ -9,10 +9,14 @@ import time
 from datetime import datetime, timezone
 from typing import List, Dict, Optional
 import re
+from dotenv import load_dotenv
 
 import praw
 from tenacity import retry, stop_after_attempt, wait_exponential
 from praw.exceptions import RedditAPIException, PRAWException
+
+# Load environment variables
+load_dotenv()
 
 # Configure logging
 logging.basicConfig(
@@ -156,7 +160,8 @@ class RedditScraper:
                         logger.debug(f"Extracted story: {story_data['title'][:50]}...")
                     
                     # Rate limiting - be respectful to Reddit API
-                    time.sleep(0.1)
+                    rate_delay = float(os.getenv('REDDIT_RATE_LIMIT_DELAY', '0.1'))
+                    time.sleep(rate_delay)
                     
                 except Exception as e:
                     logger.error(f"Error processing submission {submission.id}: {e}")
@@ -220,7 +225,8 @@ class RedditScraper:
                 logger.info(f"Total unique stories collected: {len(all_stories)}")
                 
                 # Rate limiting between batches
-                time.sleep(2)
+                batch_delay = float(os.getenv('REDDIT_BATCH_DELAY', '2'))
+                time.sleep(batch_delay)
                 
             except Exception as e:
                 logger.error(f"Error in batch fetch with filter '{time_filter}': {e}")

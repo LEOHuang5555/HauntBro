@@ -2,9 +2,11 @@
 Authentication models and utilities for HauntBro.
 """
 
+import os
 from datetime import datetime, timedelta
 from typing import Optional
 from uuid import UUID
+from dotenv import load_dotenv
 
 from passlib.context import CryptContext
 from jose import JWTError, jwt
@@ -12,14 +14,16 @@ from pydantic import BaseModel, EmailStr
 
 from database.models import User
 
+# Load environment variables
+load_dotenv()
 
 # Password hashing context
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
-# JWT settings
-SECRET_KEY = "your-secret-key-change-this-in-production"
-ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 30
+# JWT settings from environment variables
+SECRET_KEY = os.getenv("JWT_SECRET_KEY", "fallback-secret-key-for-development-only")
+ALGORITHM = os.getenv("JWT_ALGORITHM", "HS256")
+ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("JWT_ACCESS_TOKEN_EXPIRE_MINUTES", "30"))
 
 
 class UserCreate(BaseModel):

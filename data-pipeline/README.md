@@ -26,14 +26,16 @@ poetry install
 pip install -r requirements.txt
 ```
 
-### 2. Reddit API Setup
-1. Go to https://www.reddit.com/prefs/apps
-2. Create a new application (script type)
-3. Set environment variables:
+### 2. Environment Setup
 ```bash
-export REDDIT_CLIENT_ID='your_client_id'
-export REDDIT_CLIENT_SECRET='your_client_secret'
-export REDDIT_USER_AGENT='YourApp:1.0.0 (by /u/yourusername)'
+# Copy environment template from project root
+cp ../.env.example ../.env
+
+# Edit .env with your Reddit API credentials
+# Get these from https://www.reddit.com/prefs/apps
+REDDIT_CLIENT_ID=your_client_id
+REDDIT_CLIENT_SECRET=your_client_secret
+REDDIT_USER_AGENT=YourApp:1.0.0 (by /u/yourusername)
 ```
 
 ### 3. Database Setup
