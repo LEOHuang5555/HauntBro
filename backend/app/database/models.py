@@ -18,6 +18,7 @@ from sqlalchemy.dialects.postgresql import UUID as PostgresUUID, TSVECTOR, JSONB
 Base = declarative_base()
 
 
+
 # =============================================================================
 # BRONZE LAYER - Raw Data (Immutable)
 # =============================================================================
@@ -39,7 +40,6 @@ class BronzeStory(Base):
     
     # Relationships
     silver_story = relationship("SilverStory", back_populates="bronze_story", uselist=False)
-    chunks = relationship("SilverStoryChunk", back_populates="bronze_story")
     performance = relationship("GoldStoryPerformance", back_populates="story", uselist=False)
     favorites = relationship("UserFavorite", back_populates="story")
     ratings = relationship("StoryRating", back_populates="story")
@@ -48,6 +48,7 @@ class BronzeStory(Base):
     # Constraints
     __table_args__ = (
         CheckConstraint("source IN ('ptt_marvel', 'reddit_ghoststories')", name='valid_source'),
+        UniqueConstraint('source_url', name='unique_source_url'),
         Index('idx_bronze_stories_source', 'source'),
         Index('idx_bronze_stories_scraped_at', 'scraped_at'),
         Index('idx_bronze_stories_post_date', 'post_date'),
@@ -61,41 +62,6 @@ class BronzeStory(Base):
 # =============================================================================
 # SILVER LAYER - Processed Data
 # =============================================================================
-
-class SilverStoryChunk(Base):
-    """Chunked stories for RAG retrieval."""
-    
-    __tablename__ = 'silver_story_chunks'
-    
-    id = Column(PostgresUUID(as_uuid=True), primary_key=True, default=uuid4)
-    bronze_story_id = Column(PostgresUUID(as_uuid=True), ForeignKey('bronze_stories.id', ondelete='CASCADE'), nullable=False)
-    
-    # Chunking data
-    chunk_text = Column(Text, nullable=False)
-    chunk_context = Column(Text)
-    chunk_order = Column(Integer, nullable=False)
-    
-    # Search vectors
-    # Note: VECTOR type requires pgvector extension
-    # For now, we'll store as Text and cast when needed
-    embedding = Column(Text)  # Will be VECTOR(1536) when pgvector is available
-    search_vector = Column(TSVECTOR)
-    
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    
-    # Relationships
-    bronze_story = relationship("BronzeStory", back_populates="chunks")
-    
-    # Constraints
-    __table_args__ = (
-        UniqueConstraint('bronze_story_id', 'chunk_order', name='unique_chunk_order'),
-        Index('idx_silver_story_chunks_bronze_id', 'bronze_story_id'),
-        Index('idx_silver_story_chunks_search_vector', 'search_vector', postgresql_using='gin'),
-    )
-    
-    def __repr__(self):
-        return f"<SilverStoryChunk(id={self.id}, story_id={self.bronze_story_id}, order={self.chunk_order})>"
-
 
 class SilverStory(Base):
     """Cleaned story metadata."""
@@ -330,6 +296,8 @@ class UserReadingBehavior(Base):
 # PIPELINE LAYER - Data Engineering Metrics
 # =============================================================================
 
+
+
 class ScrapingPipelineMetrics(Base):
     """Business-specific pipeline metrics."""
     
@@ -349,7 +317,7 @@ class ScrapingPipelineMetrics(Base):
     
     # Constraints
     __table_args__ = (
-        CheckConstraint("source_name IN ('ptt_marvel', 'reddit_ghoststories')", name='valid_source_name'),
+        CheckConstraint("source_name IN ('ptt_marvel', 'reddit_ghoststories', 'reddit_nosleep')", name='valid_source_name'),
         Index('idx_scraping_pipeline_metrics_dag_run_id', 'airflow_dag_run_id'),
         Index('idx_scraping_pipeline_metrics_source', 'source_name'),
         Index('idx_scraping_pipeline_metrics_created_at', 'created_at'),

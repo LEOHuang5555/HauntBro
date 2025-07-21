@@ -110,7 +110,8 @@ def login_user(user_data: UserLogin, db: Session = Depends(get_db)):
     db.commit()
     
     # Create access token
-    access_token_expires = timedelta(minutes=30)
+    from app.auth.models import ACCESS_TOKEN_EXPIRE_MINUTES
+    access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     access_token = AuthManager.create_access_token(
         data={"sub": user.username}, expires_delta=access_token_expires
     )

@@ -5,12 +5,16 @@ Database connection and session management for HauntBro.
 import os
 from contextlib import contextmanager
 from typing import Generator
+from dotenv import load_dotenv
 
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker, Session
 from sqlalchemy.pool import StaticPool
 
 from .models import Base
+
+# Load environment variables
+load_dotenv()
 
 
 class DatabaseManager:
@@ -81,6 +85,11 @@ def get_db() -> Generator[Session, None, None]:
     """Dependency for getting database session in FastAPI."""
     with db_manager.get_session() as session:
         yield session
+
+
+def get_db_url() -> str:
+    """Get database URL for external use."""
+    return db_manager.database_url
 
 
 def init_database():

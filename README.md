@@ -28,7 +28,16 @@ HauntBro/
 
 ## Getting Started
 
-### Backend Setup
+### 1. Environment Setup
+```bash
+# Copy environment template
+cp .env.example .env
+
+# Edit .env with your actual values
+# Required: DATABASE_URL, REDDIT_CLIENT_ID, REDDIT_CLIENT_SECRET
+```
+
+### 2. Backend Setup
 ```bash
 cd backend
 poetry install
@@ -36,7 +45,7 @@ poetry shell
 poetry run uvicorn app.main:app --reload
 ```
 
-### Database Setup
+### 3. Database Setup
 ```bash
 cd backend
 poetry run alembic upgrade head
