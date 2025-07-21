@@ -1,5 +1,5 @@
 """
-Reddit scraper for r/nosleep ghost stories using PRAW.
+Reddit scraper for r/ghoststories ghost stories using PRAW.
 Implements rate limiting, error handling, and data extraction.
 """
 
@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 
 
 class RedditScraper:
-    """Reddit scraper for r/nosleep stories."""
+    """Reddit scraper for r/ghoststories stories."""
     
     def __init__(self, client_id: str = None, client_secret: str = None, user_agent: str = None):
         """Initialize Reddit scraper with PRAW client."""
@@ -104,9 +104,9 @@ class RedditScraper:
         stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=1, min=4, max=10)
     )
-    def get_nosleep_stories(self, limit: int = 100, time_filter: str = 'all') -> List[Dict]:
+    def get_ghoststories_stories(self, limit: int = 100, time_filter: str = 'all') -> List[Dict]:
         """
-        Fetch stories from r/nosleep with retry logic.
+        Fetch stories from r/ghoststories with retry logic.
         
         Args:
             limit: Number of stories to fetch (max 1000 per request)
@@ -122,20 +122,20 @@ class RedditScraper:
         stories = []
         
         try:
-            logger.info(f"Fetching {limit} stories from r/nosleep (time_filter: {time_filter})")
+            logger.info(f"Fetching {limit} stories from r/ghoststories (time_filter: {time_filter})")
             
             # Get subreddit
-            nosleep = self.reddit.subreddit('nosleep')
+            ghoststories = self.reddit.subreddit('ghoststories')
             
             # Fetch top stories based on time filter
             if time_filter == 'all':
-                submissions = nosleep.top(limit=limit, time_filter='all')
+                submissions = ghoststories.top(limit=limit, time_filter='all')
             elif time_filter == 'hot':
-                submissions = nosleep.hot(limit=limit)
+                submissions = ghoststories.hot(limit=limit)
             elif time_filter == 'new':
-                submissions = nosleep.new(limit=limit)
+                submissions = ghoststories.new(limit=limit)
             else:
-                submissions = nosleep.top(limit=limit, time_filter=time_filter)
+                submissions = ghoststories.top(limit=limit, time_filter=time_filter)
             
             for submission in submissions:
                 try:
@@ -147,7 +147,7 @@ class RedditScraper:
                     story_data = {
                         'title': self.clean_text(submission.title),
                         'content': self.clean_text(submission.selftext),
-                        'source': 'reddit_nosleep',
+                        'source': 'reddit_ghoststories',
                         'source_url': f"https://reddit.com{submission.permalink}",
                         'author': str(submission.author) if submission.author else '[deleted]',
                         'post_date': datetime.fromtimestamp(submission.created_utc, tz=timezone.utc),
@@ -167,7 +167,7 @@ class RedditScraper:
                     logger.error(f"Error processing submission {submission.id}: {e}")
                     continue
             
-            logger.info(f"Successfully extracted {len(stories)} stories from r/nosleep")
+            logger.info(f"Successfully extracted {len(stories)} stories from r/ghoststories")
             return stories
             
         except RedditAPIException as e:
@@ -177,7 +177,7 @@ class RedditScraper:
             logger.error(f"PRAW error: {e}")
             raise
         except Exception as e:
-            logger.error(f"Unexpected error fetching nosleep stories: {e}")
+            logger.error(f"Unexpected error fetching ghoststories stories: {e}")
             raise
     
     def get_bulk_stories(self, target_count: int = 1000) -> List[Dict]:
@@ -213,7 +213,7 @@ class RedditScraper:
             
             try:
                 logger.info(f"Fetching {batch_size} stories with filter '{time_filter}'")
-                batch_stories = self.get_nosleep_stories(limit=batch_size, time_filter=time_filter)
+                batch_stories = self.get_ghoststories_stories(limit=batch_size, time_filter=time_filter)
                 
                 # Deduplicate stories
                 for story in batch_stories:
@@ -243,7 +243,7 @@ def test_reddit_connection():
     if scraper.reddit:
         try:
             # Test with a small fetch
-            stories = scraper.get_nosleep_stories(limit=5, time_filter='hot')
+            stories = scraper.get_ghoststories_stories(limit=5, time_filter='hot')
             print(f"✓ Successfully fetched {len(stories)} test stories")
             
             if stories:

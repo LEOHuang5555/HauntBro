@@ -1,134 +1,176 @@
-# HauntBro Data Pipeline
+# HauntBro Data Pipeline - Separated Architecture
 
-Data processing pipeline for scraping and processing ghost stories from Reddit r/nosleep and PTT Marvel.
+A properly separated data extraction and transformation pipeline for the HauntBro ghost story search engine.
 
-## Components
+## 🏗️ Architecture Overview
 
-- **scrapers/**: Web scraping modules
-  - `reddit_scraper.py`: Reddit API integration for r/nosleep
-  - `get_data_from_ptt_marvel.py`: PTT Marvel scraper (legacy)
-- **etl/**: Extract, Transform, Load scripts  
-  - `reddit_etl.py`: Complete ETL pipeline for Reddit stories
-- **config/**: Configuration files
-  - `reddit_config.py`: Reddit scraping configuration
-- **scripts/**: Production and utility scripts
-  - `collect_reddit_stories.py`: Production story collection script
-  - `test_reddit_setup.py`: Setup verification script
-- **airflow/**: Apache Airflow DAGs (planned)
+```
+Phase 1: EXTRACT          Phase 2: TRANSFORM & LOAD
+[Scrapers] → [Bronze]  →  [ETL] → [Silver]
+```
 
-## Setup
+### Key Principles
+- **✅ Separation of Concerns**: Scraping and ETL are completely independent
+- **✅ Debuggable**: Clear error attribution (scraping vs ETL)
+- **✅ Trackable**: Separate status monitoring for each phase
+- **✅ Reprocessable**: Can re-run ETL without re-scraping
+- **✅ Scalable**: Can scale scraping and ETL independently
 
-### 1. Install Dependencies
+## 📁 Directory Structure
+
+```
+data-pipeline/
+├── scrapers/           # Phase 1: Pure extraction only
+│   ├── ptt_scraper_pure.py       # PTT Marvel board scraper
+│   ├── reddit_scraper_pure.py    # Reddit r/nosleep scraper
+│   ├── ptt_marvel_scraper.py     # Core PTT scraping logic
+│   └── reddit_scraper.py         # Core Reddit scraping logic
+├── etl/               # Phase 2: Pure transformation only
+│   ├── ptt_etl_pure.py          # PTT Bronze → Silver processing
+│   └── reddit_etl_pure.py       # Reddit Bronze → Silver processing
+├── scripts/           # Orchestration and testing
+│   ├── extract_phase.py         # Phase 1 orchestrator
+│   ├── transform_load_phase.py  # Phase 2 orchestrator
+│   └── test_separated_workflow.py # Test complete workflow
+└── config/            # Configuration files
+    └── reddit_config.py
+```
+
+## 🚀 Usage
+
+### Phase 1: Extract (Scraping Only)
+
+Extract raw data from sources and store in Bronze layer:
+
 ```bash
-cd ../backend
-poetry install
-# OR
-pip install -r requirements.txt
+# Extract from both sources
+python scripts/extract_phase.py
+
+# Extract from PTT only
+python scripts/extract_phase.py --sources ptt --ptt-pages 5 --ptt-articles 30
+
+# Extract from Reddit only  
+python scripts/extract_phase.py --sources reddit --reddit-count 50 --reddit-filters hot new week
 ```
 
-### 2. Environment Setup
+### Phase 2: Transform & Load (ETL Only)
+
+Process raw Bronze data into clean Silver layer:
+
 ```bash
-# Copy environment template from project root
-cp ../.env.example ../.env
+# Process all sources
+python scripts/transform_load_phase.py
 
-# Edit .env with your Reddit API credentials
-# Get these from https://www.reddit.com/prefs/apps
-REDDIT_CLIENT_ID=your_client_id
-REDDIT_CLIENT_SECRET=your_client_secret
-REDDIT_USER_AGENT=YourApp:1.0.0 (by /u/yourusername)
+# Process PTT only
+python scripts/transform_load_phase.py --sources ptt --batch-size 100
+
+# Continuous processing until no raw data left
+python scripts/transform_load_phase.py --continuous
+
+# Check processing status
+python scripts/transform_load_phase.py --status-only
 ```
 
-### 3. Database Setup
-Ensure PostgreSQL is running and the HauntBro database is initialized:
+### Individual Components
+
+Run pure scrapers directly:
+
 ```bash
-cd ../backend
-poetry run alembic upgrade head
+# PTT pure scraper
+python scrapers/ptt_scraper_pure.py --max-pages 3 --max-articles 20
+
+# Reddit pure scraper  
+python scrapers/reddit_scraper_pure.py --target-count 30 --time-filters hot new
 ```
 
-## Usage
+Run pure ETL processors directly:
 
-### Test Setup
 ```bash
-# Verify everything is working
-python scripts/test_reddit_setup.py
+# PTT pure ETL
+python etl/ptt_etl_pure.py --batch-size 50 --continuous
+
+# Reddit pure ETL
+python etl/reddit_etl_pure.py --batch-size 50
 ```
 
-### Collect Stories
+### Testing
 
-#### Test Mode (20 stories)
+Test the complete separated workflow:
+
 ```bash
-python scripts/collect_reddit_stories.py --test
+python scripts/test_separated_workflow.py
 ```
 
-#### Development Mode (100 stories)
+## 📊 Data Layers
+
+### Bronze Layer (Raw Storage)
+- **Purpose**: Immutable raw scraped data
+- **Table**: `bronze_stories`
+- **Content**: Unprocessed stories exactly as scraped
+- **Source**: Direct from scrapers (Phase 1)
+
+### Silver Layer (Processed Data)  
+- **Purpose**: Cleaned and enriched data
+- **Table**: `silver_stories`
+- **Content**: Validated stories with tags, metrics, cleaned content
+- **Source**: Processed from Bronze (Phase 2)
+
+## 🔄 Workflow Examples
+
+### Complete Workflow
 ```bash
-python scripts/collect_reddit_stories.py --count 100
+# Step 1: Extract raw data
+python scripts/extract_phase.py --sources ptt reddit
+
+# Step 2: Process raw data
+python scripts/transform_load_phase.py --sources ptt reddit --continuous
 ```
 
-#### Production Mode (1,000+ stories)
+### Focused PTT Workflow
 ```bash
-python scripts/collect_reddit_stories.py --count 1000
+# Extract PTT data
+python scripts/extract_phase.py --sources ptt --ptt-pages 5
+
+# Process PTT data
+python scripts/transform_load_phase.py --sources ptt
 ```
 
-### Manual ETL Pipeline
+### Reprocessing Workflow
 ```bash
-# Direct ETL usage
-cd etl
-python reddit_etl.py
+# Extract once
+python scripts/extract_phase.py
+
+# Can reprocess multiple times without re-scraping
+python scripts/transform_load_phase.py
+python scripts/transform_load_phase.py --continuous
 ```
 
-## Features
+## 🎯 Benefits of Separation
 
-### Reddit Scraper
-- ✅ Rate limiting compliance (Reddit API guidelines)
-- ✅ Error handling and retry logic
-- ✅ Content cleaning and validation
-- ✅ Metadata extraction (score, comments, awards)
-- ✅ Duplicate detection
-- ✅ Multiple fetch strategies (hot, new, top by time)
+1. **Independent Scaling**: Scale scraping and ETL separately
+2. **Error Isolation**: Know exactly where failures occur  
+3. **Reprocessing**: Re-run ETL to fix data without re-scraping
+4. **Testing**: Test scraping and ETL independently
+5. **Monitoring**: Track scraping success vs ETL success separately
+6. **Development**: Work on ETL logic without hitting APIs
 
-### ETL Pipeline
-- ✅ Medallion architecture integration (Bronze → Silver layers)
-- ✅ Content chunking for RAG retrieval
-- ✅ Tag generation based on content analysis
-- ✅ Data quality validation
-- ✅ Batch processing with commit optimization
-- ✅ Comprehensive logging and error tracking
+## 🔧 Configuration
 
-### Story Processing
-- ✅ Text cleaning (markdown removal, normalization)
-- ✅ Content validation (length, quality checks)
-- ✅ Tag generation (horror subgenres, length, series detection)
-- ✅ Reading time calculation
-- ✅ Chunking for search functionality
+Environment variables are loaded from `.env` file:
 
-## Architecture
+- `REDDIT_CLIENT_ID`: Reddit API client ID
+- `REDDIT_CLIENT_SECRET`: Reddit API client secret  
+- `REDDIT_USER_AGENT`: Reddit API user agent
+- `DATABASE_URL`: PostgreSQL connection string
 
-```
-Extract (Reddit API) → Clean (Text processing) → Store (Bronze/Silver layers)
-     ↓                      ↓                         ↓
-- Rate limiting        - Markdown removal         - PostgreSQL
-- Retry logic         - Content validation       - Medallion architecture  
-- Metadata extraction - Tag generation          - Search chunking
-- Deduplication       - Quality checks          - Relationship mapping
-```
+## 📋 Current Focus
 
-## Configuration
+**PTT Marvel Board**: Primary focus due to Reddit API date range limitations
+**Reddit r/nosleep**: Secondary, limited by API capabilities
 
-See `config/reddit_config.py` for:
-- API rate limits and delays
-- Content processing parameters
-- Database settings
-- Logging configuration
+## 🚀 Future Enhancements
 
-## Monitoring
-
-Logs are written to:
-- Console output (real-time)
-- `logs/reddit_collection.log` (persistent)
-
-Statistics tracked:
-- Stories extracted vs processed
-- Skip reasons (duplicates, quality)
-- Error rates and types
-- Processing time and performance
+- **Chunking**: Silver → Gold layer with embeddings
+- **Historical Collection**: Systematic date-range collection
+- **Streaming Updates**: Real-time processing with Kafka
+- **Reddit Date Filtering**: Solve API limitations for historical data

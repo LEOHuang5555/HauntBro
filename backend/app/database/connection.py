@@ -87,6 +87,11 @@ def get_db() -> Generator[Session, None, None]:
         yield session
 
 
+def get_db_url() -> str:
+    """Get database URL for external use."""
+    return db_manager.database_url
+
+
 def init_database():
     """Initialize database with tables and basic setup."""
     print("Initializing database...")
