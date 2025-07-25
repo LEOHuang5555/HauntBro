@@ -577,7 +577,7 @@ class SilverProcessor:
                 'semantic_keywords': chunk.semantic_keywords,
                 'processing_language': 'zh',
                 'chunk_quality_score': 0.8,  # Default quality for processed chunks
-                'embedding_model_version': chunk.processing_metadata.get('model_used', 'deepseek-coder-6.7b-instruct')
+                'embedding_model_version': chunk.processing_metadata.get('model_used', 'deepseek-coder')
             }
             chunk_dicts.append(chunk_dict)
         return chunk_dicts
@@ -597,7 +597,7 @@ class SilverProcessor:
                 'semantic_keywords': chunk.semantic_keywords,
                 'processing_language': 'en',
                 'chunk_quality_score': min(1.0, 0.7 + chunk.dialogue_ratio * 0.3),  # Quality bonus for dialogue
-                'embedding_model_version': chunk.processing_metadata.get('model_used', 'llama-2-7b-chat-hf')
+                'embedding_model_version': chunk.processing_metadata.get('model_used', 'llama3.2')
             }
             chunk_dicts.append(chunk_dict)
         return chunk_dicts

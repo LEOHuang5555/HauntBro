@@ -20,7 +20,7 @@ class ModelManager:
     
     def setup_llama_english(self):
         """Setup LLaMA for English content"""
-        model_name = "meta-llama/Llama-2-7b-chat-hf"
+        model_name = "llama3.2"
         
         print("Loading LLaMA tokenizer...")
         tokenizer = AutoTokenizer.from_pretrained(
@@ -43,7 +43,7 @@ class ModelManager:
     
     def setup_deepseek_mandarin(self):
         """Setup Deepseek for Mandarin content"""
-        model_name = "deepseek-ai/deepseek-coder-6.7b-instruct"
+        model_name = "deepseek-coder"
         
         print("Loading Deepseek tokenizer...")
         tokenizer = AutoTokenizer.from_pretrained(

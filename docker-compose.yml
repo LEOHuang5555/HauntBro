@@ -1,8 +1,9 @@
-version: '3.8'
-
 # ENV-based airflow configs (optional)
 x-airflow-common:
   &airflow-common
+  build:
+    context: ./airflow
+    dockerfile: Dockerfile
   image: apache/airflow:3.0.3
   environment:
     &airflow-common-env
@@ -13,13 +14,15 @@ x-airflow-common:
     AIRFLOW__CORE__FERNET_KEY: ''
     AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: 'true'
     AIRFLOW__CORE__LOAD_EXAMPLES: 'true'
-    # AIRFLOW__CORE__AUTH_MANAGER: airflow.auth.managers.fab.fab_auth_manager.FabAuthManager
-
+    AIRFLOW__WEBSERVER__AUTHENTICATE: 'false'
+    AIRFLOW__API__AUTH_BACKENDS: 'airflow.api.auth.backend.default'
+    AIRFLOW__API__JWT_SECRET: 'g70X_yTlMbV7nq6gWSMj9GGQlf5RrU3fZaUg1SNABRfx0XwiJlxLqAp9aEfQhCzd8Exu-Q7tA5Piw9YARIztBA'
   volumes:
     - ./airflow/dags:/opt/airflow/dags
     - ./airflow/logs:/opt/airflow/logs
-    - ./airflow/config:/opt/airflow/config
     - ./airflow/plugins:/opt/airflow/plugins
+    - ./airflow/operators:/opt/airflow/operators
+    - ./airflow/config/airflow.cfg:/opt/airflow/airflow.cfg
   user: "${AIRFLOW_UID:-50000}:0"
   depends_on:
     redis:

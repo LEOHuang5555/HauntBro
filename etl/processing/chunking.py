@@ -155,23 +155,23 @@ Response format: {{"chunks": [...]}}
     async def chunk_with_deepseek(self, text: str, config: ChunkConfig) -> List[Dict]:
         """Use Deepseek to intelligently chunk Mandarin text"""
         prompt = f"""
-任务：将这个中文故事分割成语义块，以便更好地搜索。
+任務：將這個中文故事分割成語義塊，以便更好地搜索。
 
 要求：
-- 每个块应该是{config.target_chunk_size}-{config.max_chunk_size}个字符
-- 保持叙事连贯性
-- 在自然的故事边界处分割（场景变化、对话间断、时间转换）
-- 确保每个块都可以独立进行搜索
+- 每個塊應該是{config.target_chunk_size}-{config.max_chunk_size}個字符
+- 保持敘事連貫性
+- 在自然的故事邊界處分割（場景變化、對話間斷、時間轉換）
+- 確保每個塊都可以獨立進行搜索
 
 故事文本：
 {text}
 
-返回JSON数组，每个块包含：
-- "text": 块内容
-- "type": "开头", "发展", "高潮", "结尾", 或 "主体"
-- "summary": 这个块中发生的事情的简要描述
+返回JSON數組，每個塊包含：
+- "text": 塊內容
+- "type": "開頭", "發展", "高潮", "結尾", 或 "主體"
+- "summary": 這個塊中發生的事情的簡要描述
 
-响应格式: {{"chunks": [...]}}
+響應格式: {{"chunks": [...]}}
 """
         
         payload = {
@@ -438,11 +438,11 @@ class StoryChunker:
         """Normalize chunk types across languages"""
         type_mapping = {
             'zh': {
-                '开头': 'opening',
-                '发展': 'development', 
+                '開頭': 'opening',
+                '發展': 'development', 
                 '高潮': 'climax',
-                '结尾': 'ending',
-                '主体': 'body'
+                '結尾': 'ending',
+                '主體': 'body'
             },
             'en': {
                 'opening': 'opening',

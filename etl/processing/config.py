@@ -6,7 +6,7 @@ from typing import Dict, Any
 class ModelConfig:
     """Configuration for local models"""
     ollama_base_url: str = "http://localhost:11434"
-    english_model: str = "llama3:8b"  # Updated to llama3
+    english_model: str = "llama3.2"  # Updated to llama3.2
     chinese_model: str = "deepseek-coder"  # Updated model name
     use_gpu: bool = True
     max_context_length: int = 4096
@@ -27,8 +27,8 @@ class ChunkingConfig:
     max_chunks_per_story: int = 50
     
     # Embedding settings
-    embedding_model: str = "all-MiniLM-L6-v2"
-    embedding_dimension: int = 384
+    embedding_model: str = "text-embedding-3-small"
+    embedding_dimension: int = 1536
     
     # Language-specific settings
     chinese_char_per_token: float = 1.5

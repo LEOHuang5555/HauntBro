@@ -405,7 +405,7 @@ Please respond in JSON format with a "chunks" array, where each chunk contains:
                     horror_indicators=horror_indicators[:8],  # Limit to top 8
                     dialogue_ratio=dialogue_ratio,
                     processing_metadata={
-                        'model_used': 'llama-2-7b-chat-hf',
+                        'model_used': 'llama3.2',
                         'processing_time': (datetime.now() - start_time).total_seconds(),
                         'normalization_applied': True,
                         'keyword_extraction_method': 'nltk' if NLTK_AVAILABLE else 'regex'
@@ -564,7 +564,7 @@ Please respond in JSON format with a "chunks" array, where each chunk contains:
                     'language': 'en',
                     'total_words': len(story_text.split()),
                     'chunks_generated': len(chunks),
-                    'model_used': 'llama-2-7b-chat-hf',
+                    'model_used': 'llama3.2',
                     'normalization_applied': True,
                     'avg_dialogue_ratio': sum(chunk.dialogue_ratio for chunk in chunks) / len(chunks) if chunks else 0,
                     'narrative_elements_found': sum(len(chunk.narrative_elements) for chunk in chunks),
@@ -592,7 +592,7 @@ Please respond in JSON format with a "chunks" array, where each chunk contains:
         """Get comprehensive processing statistics"""
         return {
             'processor_type': 'english_llama',
-            'model_name': 'llama-2-7b-chat-hf',
+            'model_name': 'llama3.2',
             'device': self.device,
             'is_initialized': self.is_initialized,
             'total_cost': self.total_cost,
