@@ -145,6 +145,75 @@ The project now includes:
 - **Embedding Support**: Ready for pgvector when available
 - **Comprehensive Analytics**: User behavior and search tracking
 
+## Docker Development Environment
+
+The project uses Docker Compose to orchestrate all services including databases, Airflow, and Ollama for local model serving.
+
+### Service Architecture
+- **hauntbro-db**: PostgreSQL database (port 5432)
+- **backend**: FastAPI application (port 8000)
+- **ollama**: Local LLM server with llama3.2 and deepseek-coder models (port 11434)
+- **airflow-webserver**: Airflow web interface (port 8080)
+- **airflow-scheduler**: Airflow task scheduler
+- **airflow-worker**: Celery worker for task execution
+- **airflow-db**: PostgreSQL for Airflow metadata
+- **redis**: Message broker for Celery
+- **kafka**: Streaming data processing (port 9092)
+- **zookeeper**: Kafka coordination (port 2181)
+
+### Docker Build Up Commands
+
+```bash
+# Start all services
+docker-compose up -d
+
+# Start specific services
+docker-compose up -d hauntbro-db ollama airflow-webserver
+
+# Check service status
+docker-compose ps
+
+# View logs for specific service
+docker-compose logs -f ollama
+docker-compose logs -f airflow-webserver
+
+# Execute commands in containers
+docker exec -it hauntbro-db psql -U postgres -d hauntbro
+docker exec -it hauntbro-ollama-1 ollama list
+
+# Stop all services
+docker-compose down
+
+# Stop and remove volumes (complete reset)
+docker-compose down -v
+```
+
+### Service Health Checks
+- **Ollama**: `curl http://localhost:11434/api/tags`
+- **Airflow**: `curl http://localhost:8080/api/v2/dags`
+- **Database**: `docker exec hauntbro-db pg_isready -U postgres`
+- **Backend**: `curl http://localhost:8000/health`
+
+### Available Models
+The Ollama service automatically pulls:
+- **llama3.2**: For English text processing and generation
+- **deepseek-coder**: For Chinese text processing and code generation
+
+### ETL Pipeline Execution
+The medallion architecture ETL pipeline can be executed via:
+1. **Airflow DAGs**: Scheduled execution through web interface
+2. **Direct Python**: Manual execution of individual processors
+3. **SQL-based**: Direct database processing for testing
+
+Example ETL execution:
+```bash
+# Test database connection and verify medallion schema
+docker exec hauntbro-db psql -U postgres -d hauntbro -c "SELECT COUNT(*) FROM bronze_stories;"
+
+# Execute silver layer processing
+docker exec hauntbro-db psql -U postgres -d hauntbro -c "SELECT COUNT(*) FROM silver_story_chunks;"
+```
+
 ## Future Architecture Considerations
 Based on the project description, the system will likely include:
 - Web scraping modules for PTT Marvel and Reddit
