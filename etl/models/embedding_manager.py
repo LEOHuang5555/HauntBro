@@ -15,7 +15,7 @@ import sys
 
 # Add parent directories to path for imports
 sys.path.append(str(Path(__file__).parent.parent.parent))
-from etl.processing.config import CONFIG
+from etl.config.config import CONFIG
 
 # Optional imports for alternative embedding models
 try:
@@ -65,6 +65,7 @@ class EmbeddingManager:
     def __init__(self):
         """Initialize embedding manager with multiple model options"""
         self.openai_config = CONFIG["openai"]
+        self.embedding_config = CONFIG["embedding"]
         self.model_config = CONFIG["model"]
         
         # Model instances
@@ -80,36 +81,12 @@ class EmbeddingManager:
             'avg_processing_time': 0.0
         }
         
-        # Model configurations and pricing
+        # Use model configurations from EmbeddingConfig to avoid conflicts
         self.model_configs = {
-            'openai_small': {
-                'model': 'text-embedding-3-small',
-                'dimensions': 1536,
-                'cost_per_1k_tokens': 0.00002,  # $0.00002 per 1K tokens
-                'max_batch_size': 100,
-                'context_length': 8192
-            },
-            'openai_large': {
-                'model': 'text-embedding-3-large',
-                'dimensions': 3072,
-                'cost_per_1k_tokens': 0.00013,  # $0.00013 per 1K tokens
-                'max_batch_size': 100,
-                'context_length': 8192
-            },
-            'sentence_transformer_multilingual': {
-                'model': 'sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2',
-                'dimensions': 384,
-                'cost_per_1k_tokens': 0.0,  # Free
-                'max_batch_size': 32,
-                'context_length': 512
-            },
-            'sentence_transformer_english': {
-                'model': 'sentence-transformers/all-MiniLM-L6-v2',
-                'dimensions': 384,
-                'cost_per_1k_tokens': 0.0,  # Free
-                'max_batch_size': 32,
-                'context_length': 512
-            }
+            'openai_small': self.embedding_config.openai_small,
+            'openai_large': self.embedding_config.openai_large,
+            'sentence_transformer_multilingual': self.embedding_config.sentence_transformer_multilingual,
+            'sentence_transformer_english': self.embedding_config.sentence_transformer_english
         }
         
         # Performance tracking
@@ -135,12 +112,12 @@ class EmbeddingManager:
                 try:
                     print("Loading multilingual sentence transformer...")
                     self.sentence_transformer = SentenceTransformer(
-                        'sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2'
+                        self.embedding_config.sentence_transformer_multilingual['model']
                     )
                     
                     print("Loading English-optimized sentence transformer...")
                     self.chinese_transformer = SentenceTransformer(
-                        'sentence-transformers/all-MiniLM-L6-v2'
+                        self.embedding_config.sentence_transformer_english['model']
                     )
                     
                     print("✅ Sentence Transformer models loaded")
@@ -433,16 +410,16 @@ class EmbeddingManager:
         # Determine optimal batch size
         if batch_size is None:
             if strategy == "cost_optimized" and SENTENCE_TRANSFORMERS_AVAILABLE:
-                batch_size = 32  # Sentence Transformers optimal batch
+                batch_size = self.embedding_config.batch_size_sentence_transformer
             else:
-                batch_size = 10  # Conservative for OpenAI to avoid rate limits
+                batch_size = self.embedding_config.batch_size_openai
         
         embeddings = []
         total_cost = 0.0
         failed_count = 0
         
         # Process in batches with controlled concurrency
-        semaphore = asyncio.Semaphore(3)  # Limit concurrent requests
+        semaphore = asyncio.Semaphore(self.embedding_config.max_concurrent_requests)
         
         async def process_single_embedding(text, context):
             async with semaphore:
@@ -520,10 +497,10 @@ class EmbeddingManager:
         }
         
         # Add cost optimization recommendations
-        if self.cost_stats['openai_cost'] > 10.0:  # Over $10
+        if self.cost_stats['openai_cost'] > self.embedding_config.cost_warning_threshold:
             analysis['recommendations'].append("Consider using Sentence Transformers for high-volume embeddings")
         
-        if self.cost_stats['avg_processing_time'] > 2000:  # Over 2 seconds
+        if self.cost_stats['avg_processing_time'] > self.embedding_config.processing_time_threshold:
             analysis['recommendations'].append("Consider using local models for faster processing")
         
         free_ratio = self.cost_stats['sentence_transformer_calls'] / max(total_embeddings, 1)

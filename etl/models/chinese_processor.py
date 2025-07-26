@@ -4,27 +4,19 @@ Handles Traditional Chinese ghost story processing with DeepSeek models
 """
 
 import asyncio
-import torch
 import unicodedata
 import re
 import json
+import requests
 from typing import List, Dict, Optional, Tuple, Any
 from dataclasses import dataclass
 from datetime import datetime
-import openai
 from pathlib import Path
 import sys
 
 # Add parent directories to path for imports
 sys.path.append(str(Path(__file__).parent.parent.parent))
-from etl.processing.config import CONFIG
-
-# Transformers imports for DeepSeek
-try:
-    from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig
-    TRANSFORMERS_AVAILABLE = True
-except ImportError:
-    TRANSFORMERS_AVAILABLE = False
+from etl.config.config import CONFIG
 
 # Chinese text processing imports
 try:
@@ -69,18 +61,17 @@ class ChineseProcessor:
     """
     
     def __init__(self, cache_dir: str = "./models"):
-        """Initialize Chinese processor with DeepSeek model"""
+        """Initialize Chinese processor with Ollama DeepSeek model"""
         self.cache_dir = Path(cache_dir)
         self.cache_dir.mkdir(exist_ok=True)
-        self.device = "cuda" if torch.cuda.is_available() else "cpu"
         
         # Model configuration
         self.model_config = CONFIG["model"]
         self.chunking_config = CONFIG["chunking"]
         
-        # DeepSeek model setup
-        self.tokenizer = None
-        self.model = None
+        # Ollama configuration
+        self.ollama_base_url = self.model_config.ollama_base_url
+        self.model_name = "deepseek-coder:latest" # self.model_config.chinese_model
         self.is_initialized = False
         
         # Chinese processing setup
@@ -105,62 +96,74 @@ class ChineseProcessor:
             print("⚠️  Chinese processing libraries not available - install jieba and zhconv")
     
     async def initialize(self) -> bool:
-        """Initialize DeepSeek model for Chinese processing"""
-        if not TRANSFORMERS_AVAILABLE:
-            print("❌ Transformers library not available")
-            return False
-        
+        """Initialize Ollama DeepSeek model for Chinese processing"""
         try:
             print("🚀 Initializing DeepSeek model for Chinese processing...")
             
-            # DeepSeek model configuration
-            model_name = "deepseek-ai/deepseek-coder-6.7b-instruct"
+            # Test Ollama connection
+            response = requests.get(f"{self.ollama_base_url}/api/tags", timeout=10)
+            response.raise_for_status()
             
-            # Configure quantization for memory efficiency
-            bnb_config = BitsAndBytesConfig(
-                load_in_4bit=True,
-                bnb_4bit_use_double_quant=True,
-                bnb_4bit_quant_type="nf4",
-                bnb_4bit_compute_dtype=torch.bfloat16
+            # Check if deepseek-coder model is available
+            models_data = response.json()
+            models = models_data.get('models', [])
+            model_names = [model['name'] for model in models]
+            
+            # Check for deepseek-coder model
+            deepseek_available = any('deepseek-coder' in name for name in model_names)
+            
+            if not deepseek_available:
+                print("❌ DeepSeek model not found in Ollama. Please pull it first:")
+                print("   docker exec ollama ollama pull deepseek-coder:latest")
+                return False
+            
+            # Test model inference
+            test_response = requests.post(
+                f"{self.ollama_base_url}/api/generate",
+                json={
+                    "model": self.model_name,
+                    "prompt": "測試",
+                    "stream": False,
+                    "options": {"num_predict": 5}
+                },
+                timeout=30
             )
             
-            print("Loading DeepSeek tokenizer...")
-            self.tokenizer = AutoTokenizer.from_pretrained(
-                model_name,
-                cache_dir=self.cache_dir,
-                trust_remote_code=True
-            )
-            
-            # Add padding token if not present
-            if self.tokenizer.pad_token is None:
-                self.tokenizer.pad_token = self.tokenizer.eos_token
-            
-            print("Loading DeepSeek model...")
-            self.model = AutoModelForCausalLM.from_pretrained(
-                model_name,
-                quantization_config=bnb_config,
-                device_map="auto",
-                cache_dir=self.cache_dir,
-                trust_remote_code=True,
-                torch_dtype=torch.float16
-            )
+            if test_response.status_code != 200:
+                print(f"❌ DeepSeek model test failed: {test_response.status_code}")
+                return False
             
             self.is_initialized = True
-            print(f"✅ DeepSeek model loaded on {self.device}")
+            print(f"✅ DeepSeek model connected via Ollama at {self.ollama_base_url}")
             return True
             
+        except requests.exceptions.ConnectionError:
+            print(f"❌ Cannot connect to Ollama at {self.ollama_base_url}")
+            return False
         except Exception as e:
             print(f"❌ DeepSeek initialization failed: {e}")
             return False
     
     def normalize_chinese_text(self, text: str) -> str:
         """
-        Normalize Traditional Chinese text for consistent processing
+        Normalize Traditional Chinese text with LLM-guided improvements
         Handles character variants, encoding issues, and formatting
         """
         if not text:
             return ""
         
+        # First apply basic normalization
+        normalized_text = self._basic_normalize_chinese_text(text)
+        
+        # Apply LLM-guided normalization for complex cases if available
+        if self.is_initialized and len(normalized_text) > 100:  # Only for substantial text
+            enhanced_text = asyncio.run(self._llm_enhance_normalization(normalized_text))
+            return enhanced_text if enhanced_text else normalized_text
+        
+        return normalized_text
+    
+    def _basic_normalize_chinese_text(self, text: str) -> str:
+        """Basic Chinese text normalization"""
         try:
             # Unicode normalization - CRITICAL for Chinese text
             text = unicodedata.normalize('NFKC', text)
@@ -192,11 +195,73 @@ class ChineseProcessor:
             return text.strip()
             
         except Exception as e:
-            print(f"❌ Text normalization failed: {e}")
+            print(f"❌ Basic text normalization failed: {e}")
             return text  # Return original if normalization fails
     
+    async def _llm_enhance_normalization(self, text: str) -> Optional[str]:
+        """Use Ollama DeepSeek to enhance text normalization"""
+        try:
+            normalization_prompt = f"""你是一個專業的中文文本標準化專家。請對以下繁體中文文本進行進階標準化處理，改善文本品質但保持原意不變。
+
+原文本：
+{text}
+
+請進行以下標準化處理：
+1. 統一標點符號使用（確保使用正確的中文標點）
+2. 修正明顯的錯字或異體字
+3. 統一詞彙用法（如：「裡面」vs「裏面」）
+4. 改善句子結構和流暢度
+5. 保持恐怖故事的語調和氛圍
+6. 移除多餘的空格或格式問題
+
+請直接回答標準化後的文本，不要添加額外說明。"""
+            
+            # Call Ollama API
+            response = requests.post(
+                f"{self.ollama_base_url}/api/generate",
+                json={
+                    "model": self.model_name,
+                    "prompt": normalization_prompt,
+                    "stream": False,
+                    "options": {
+                        "temperature": 0.2,
+                        "top_p": 0.7,
+                        "num_predict": 1024
+                    }
+                },
+                timeout=60
+            )
+            
+            if response.status_code != 200:
+                print(f"❌ Ollama API error: {response.status_code}")
+                return None
+            
+            result = response.json()
+            normalized_text = result.get('response', '').strip()
+            
+            # Validate the normalized text
+            if (len(normalized_text) > len(text) * 0.5 and  # Not too short
+                len(normalized_text) < len(text) * 2 and      # Not too long
+                normalized_text and                            # Not empty
+                '```' not in normalized_text):                # No code blocks
+                return normalized_text
+            else:
+                return None  # Use basic normalization
+                
+        except Exception as e:
+            print(f"❌ LLM text normalization failed: {e}")
+            return None
+    
     def extract_cultural_entities(self, text: str) -> List[str]:
-        """Extract Chinese cultural entities and references"""
+        """Extract cultural entities using DeepSeek cultural knowledge"""
+        # Fallback to regex if DeepSeek is not available
+        if not self.is_initialized:
+            return self._extract_cultural_entities_regex(text)
+        
+        return asyncio.run(self._extract_cultural_entities_deepseek(text))
+    
+    def _extract_cultural_entities_regex(self, text: str) -> List[str]:
+        """Fallback regex-based cultural entity extraction"""
         entities = []
         
         # Common ghost story cultural elements
@@ -219,8 +284,81 @@ class ChineseProcessor:
         
         return list(set(entities))  # Remove duplicates
     
+    async def _extract_cultural_entities_deepseek(self, text: str) -> List[str]:
+        """Extract cultural entities using DeepSeek cultural knowledge"""
+        try:
+            cultural_prompt = f"""
+你是一個專精中華文化和民俗的專家，特別了解鬼故事和靈異傳說中的文化元素。請分析以下文本，提取其中的中華文化相關實體和概念。
+
+文本內容：{text}
+
+請識別並提取以下類型的文化實體：
+1. 地點場所（如：廟宇、墓地、古宅、學校等）
+2. 超自然存在（如：鬼魂、精怪、神靈等）
+3. 時間概念（如：鬼月、子時、農曆節日等）
+4. 宗教靈性（如：符咒、法師、佛珠、護身符等）
+5. 傳統物品（如：香燭、紙錢、供品等）
+6. 民俗活動（如：拜拜、祭拜、超渡等）
+7. 文化概念（如：因果報應、陰陽、風水等）
+
+請以JSON格式回答，包含一個"entities"陣列，列出找到的文化實體：
+{{"entities": ["文化實體1", "文化實體2", ...]}}
+"""
+            
+            # Call Ollama API
+            response = requests.post(
+                f"{self.ollama_base_url}/api/generate",
+                json={
+                    "model": self.model_name,
+                    "prompt": cultural_prompt,
+                    "stream": False,
+                    "options": {
+                        "temperature": 0.3,
+                        "top_p": 0.8,
+                        "num_predict": 512
+                    }
+                },
+                timeout=60
+            )
+            
+            if response.status_code != 200:
+                print(f"❌ Ollama API error: {response.status_code}")
+                return self._extract_cultural_entities_regex(text)
+            
+            result = response.json()
+            response_text = result.get('response', '').strip()
+            
+            # Parse JSON response
+            try:
+                cultural_data = json.loads(response_text)
+                entities = cultural_data.get('entities', [])
+                
+                # Validate and clean the results
+                valid_entities = []
+                for entity in entities:
+                    if isinstance(entity, str) and len(entity.strip()) > 0 and len(entity) < 30:
+                        valid_entities.append(entity.strip())
+                
+                return valid_entities[:15]  # Limit to top 15
+                
+            except json.JSONDecodeError:
+                print("⚠️  DeepSeek cultural response not valid JSON, using regex fallback")
+                return self._extract_cultural_entities_regex(text)
+                
+        except Exception as e:
+            print(f"❌ DeepSeek cultural extraction failed: {e}")
+            return self._extract_cultural_entities_regex(text)
+    
     def extract_emotion_indicators(self, text: str) -> List[str]:
-        """Extract emotional indicators specific to horror/ghost stories"""
+        """Extract emotional indicators using DeepSeek semantic analysis"""
+        # Fallback to regex if DeepSeek is not available
+        if not self.is_initialized:
+            return self._extract_emotion_indicators_regex(text)
+        
+        return asyncio.run(self._extract_emotion_indicators_deepseek(text))
+    
+    def _extract_emotion_indicators_regex(self, text: str) -> List[str]:
+        """Fallback regex-based emotion extraction"""
         emotions = []
         
         # Fear and suspense indicators in Chinese
@@ -242,6 +380,69 @@ class ChineseProcessor:
             emotions.extend(matches)
         
         return list(set(emotions))
+    
+    async def _extract_emotion_indicators_deepseek(self, text: str) -> List[str]:
+        """Extract emotion indicators using DeepSeek semantic analysis"""
+        try:
+            emotion_prompt = f"""
+你是一個專業的中文恐怖小說分析師。請分析以下文本中的情感指標，特別是恐懼、懸疑和恐怖相關的情感表達。
+
+文本內容：{text}
+
+請識別並提取以下類型的情感指標：
+1. 恐懼表達（如：害怕、恐懼、驚嚇等）
+2. 身體反應（如：起雞皮疙瘩、汗毛直豎、心跳加速等）
+3. 氛圍描述（如：陰森、詭異、令人不安等）
+4. 聲音效果（如：尖叫、哭聲、腳步聲等）
+5. 視覺描述（如：慘白、血紅、漆黑等）
+
+請以JSON格式回答，包含一個"emotions"陣列，列出找到的情感指標：
+{{"emotions": ["情感指標1", "情感指標2", ...]}}
+"""
+            
+            # Call Ollama API
+            response = requests.post(
+                f"{self.ollama_base_url}/api/generate",
+                json={
+                    "model": self.model_name,
+                    "prompt": emotion_prompt,
+                    "stream": False,
+                    "options": {
+                        "temperature": 0.3,
+                        "top_p": 0.8,
+                        "num_predict": 512
+                    }
+                },
+                timeout=60
+            )
+            
+            if response.status_code != 200:
+                print(f"❌ Ollama API error: {response.status_code}")
+                return self._extract_emotion_indicators_regex(text)
+            
+            result = response.json()
+            response_text = result.get('response', '').strip()
+            
+            # Parse JSON response
+            try:
+                emotion_data = json.loads(response_text)
+                emotions = emotion_data.get('emotions', [])
+                
+                # Validate and clean the results
+                valid_emotions = []
+                for emotion in emotions:
+                    if isinstance(emotion, str) and len(emotion.strip()) > 0 and len(emotion) < 20:
+                        valid_emotions.append(emotion.strip())
+                
+                return valid_emotions[:10]  # Limit to top 10
+                
+            except json.JSONDecodeError:
+                print("⚠️  DeepSeek emotion response not valid JSON, using regex fallback")
+                return self._extract_emotion_indicators_regex(text)
+                
+        except Exception as e:
+            print(f"❌ DeepSeek emotion extraction failed: {e}")
+            return self._extract_emotion_indicators_regex(text)
     
     def segment_chinese_text(self, text: str) -> List[str]:
         """Segment Chinese text into words using jieba"""
@@ -287,28 +488,28 @@ class ChineseProcessor:
 - keywords: 關鍵詞列表
 """
             
-            # Tokenize the prompt
-            inputs = self.tokenizer.encode(
-                chunking_prompt, 
-                return_tensors="pt", 
-                max_length=4096,
-                truncation=True
-            ).to(self.device)
+            # Call Ollama API
+            response = requests.post(
+                f"{self.ollama_base_url}/api/generate",
+                json={
+                    "model": self.model_name,
+                    "prompt": chunking_prompt,
+                    "stream": False,
+                    "options": {
+                        "temperature": self.model_config.temperature,
+                        "top_p": self.model_config.top_p,
+                        "num_predict": 2048
+                    }
+                },
+                timeout=120  # Longer timeout for chunking
+            )
             
-            # Generate response with DeepSeek
-            with torch.no_grad():
-                outputs = self.model.generate(
-                    inputs,
-                    max_new_tokens=2048,
-                    temperature=self.model_config.temperature,
-                    top_p=self.model_config.top_p,
-                    do_sample=True,
-                    pad_token_id=self.tokenizer.eos_token_id
-                )
-            
-            # Decode response
-            response = self.tokenizer.decode(outputs[0], skip_special_tokens=True)
-            response_text = response[len(chunking_prompt):].strip()
+            if response.status_code != 200:
+                print(f"❌ Ollama API error: {response.status_code}")
+                deepseek_chunks = self._fallback_chunking(normalized_text)
+            else:
+                result = response.json()
+                response_text = result.get('response', '').strip()
             
             # Parse JSON response from DeepSeek
             try:
@@ -328,10 +529,14 @@ class ChineseProcessor:
                 if not chunk_text:
                     continue
                 
-                # Extract metadata
+                # Extract metadata using enhanced DeepSeek-powered functions
                 cultural_entities = self.extract_cultural_entities(chunk_text)
                 emotion_indicators = self.extract_emotion_indicators(chunk_text)
                 keywords = chunk_info.get('keywords', [])
+                
+                # Validate and limit extracted metadata
+                cultural_entities = cultural_entities[:5] if cultural_entities else []
+                emotion_indicators = emotion_indicators[:5] if emotion_indicators else []
                 
                 # Word segmentation
                 words = self.segment_chinese_text(chunk_text)
@@ -348,7 +553,7 @@ class ChineseProcessor:
                     cultural_entities=cultural_entities[:5],  # Limit to top 5
                     emotion_indicators=emotion_indicators[:5],  # Limit to top 5
                     processing_metadata={
-                        'model_used': 'deepseek-coder-6.7b-instruct',
+                        'model_used': 'deepseek-coder:latest',
                         'processing_time': (datetime.now() - start_time).total_seconds(),
                         'normalization_applied': True,
                         'segmentation_method': 'jieba' if CHINESE_PROCESSING_AVAILABLE else 'character'
@@ -357,9 +562,13 @@ class ChineseProcessor:
                 
                 chunks.append(chunk)
             
-            # Calculate cost (estimate based on tokens)
-            total_tokens = len(inputs[0]) + sum(len(self.tokenizer.encode(chunk.normalized_text)) for chunk in chunks)
-            estimated_cost = self._calculate_processing_cost(total_tokens)
+            # Calculate cost (estimate based on character count)
+            input_chars = len(chunking_prompt)
+            output_chars = sum(len(chunk.normalized_text) for chunk in chunks)
+            total_chars = input_chars + output_chars
+            # Rough estimate: 1 token ≈ 1.5-2 Chinese characters
+            estimated_tokens = total_chars // 1.5
+            estimated_cost = self._calculate_processing_cost(estimated_tokens)
             self.total_cost += estimated_cost
             
             processing_time_ms = int((datetime.now() - start_time).total_seconds() * 1000)
@@ -496,7 +705,7 @@ class ChineseProcessor:
                     'language': 'zh',
                     'total_characters': len(story_text),
                     'chunks_generated': len(chunks),
-                    'model_used': 'deepseek-coder-6.7b-instruct',
+                    'model_used': 'deepseek-coder:latest',
                     'normalization_applied': True,
                     'cultural_entities_found': sum(len(chunk.cultural_entities) for chunk in chunks),
                     'emotion_indicators_found': sum(len(chunk.emotion_indicators) for chunk in chunks)
@@ -522,23 +731,18 @@ class ChineseProcessor:
     def get_processing_stats(self) -> Dict:
         """Get comprehensive processing statistics"""
         return {
-            'processor_type': 'chinese_deepseek',
-            'model_name': 'deepseek-coder-6.7b-instruct',
-            'device': self.device,
+            'processor_type': 'chinese_deepseek_ollama',
+            'model_name': 'deepseek-coder:latest',
+            'ollama_url': self.ollama_base_url,
             'is_initialized': self.is_initialized,
             'total_cost': self.total_cost,
             'processing_stats': self.processing_stats,
-            'chinese_processing_available': CHINESE_PROCESSING_AVAILABLE,
-            'transformers_available': TRANSFORMERS_AVAILABLE
+            'chinese_processing_available': CHINESE_PROCESSING_AVAILABLE
         }
     
     async def cleanup(self):
         """Cleanup resources"""
-        if self.model:
-            del self.model
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-        
+        # No model cleanup needed for Ollama API
         print("🧹 Chinese processor resources cleaned up")
 
 

@@ -2,7 +2,7 @@ from typing import List, Tuple
 from sentence_transformers import SentenceTransformer
 import openai
 import asyncio
-from config import CONFIG
+from etl.config.config import CONFIG
 
 class EmbeddingGenerator:
     """Generate embeddings for chunks using both local and OpenAI models"""

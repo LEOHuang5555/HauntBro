@@ -4,26 +4,18 @@ Handles English ghost story processing with LLaMA models
 """
 
 import asyncio
-import torch
 import re
 import json
+import requests
 from typing import List, Dict, Optional, Tuple, Any
 from dataclasses import dataclass
 from datetime import datetime
-import spacy
 from pathlib import Path
 import sys
 
 # Add parent directories to path for imports
 sys.path.append(str(Path(__file__).parent.parent.parent))
-from etl.processing.config import CONFIG
-
-# Transformers imports for LLaMA
-try:
-    from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig
-    TRANSFORMERS_AVAILABLE = True
-except ImportError:
-    TRANSFORMERS_AVAILABLE = False
+from etl.config.config import CONFIG
 
 # English text processing imports
 try:
@@ -70,18 +62,17 @@ class EnglishProcessor:
     """
     
     def __init__(self, cache_dir: str = "./models"):
-        """Initialize English processor with LLaMA model"""
+        """Initialize English processor with Ollama LLaMA model"""
         self.cache_dir = Path(cache_dir)
         self.cache_dir.mkdir(exist_ok=True)
-        self.device = "cuda" if torch.cuda.is_available() else "cpu"
         
         # Model configuration
         self.model_config = CONFIG["model"]
         self.chunking_config = CONFIG["chunking"]
         
-        # LLaMA model setup
-        self.tokenizer = None
-        self.model = None
+        # Ollama configuration
+        self.ollama_base_url = self.model_config.ollama_base_url
+        self.model_name = "llama3.2:latest"
         self.is_initialized = False
         
         # English processing setup
@@ -111,50 +102,50 @@ class EnglishProcessor:
             self.stop_words = set()
     
     async def initialize(self) -> bool:
-        """Initialize LLaMA model for English processing"""
-        if not TRANSFORMERS_AVAILABLE:
-            print("❌ Transformers library not available")
-            return False
-        
+        """Initialize Ollama LLaMA model for English processing"""
         try:
             print("🚀 Initializing LLaMA model for English processing...")
             
-            # LLaMA model configuration - using Llama-2 7B chat model
-            model_name = "meta-llama/Llama-2-7b-chat-hf"
+            # Test Ollama connection
+            response = requests.get(f"{self.ollama_base_url}/api/tags", timeout=10)
+            response.raise_for_status()
             
-            # Configure quantization for memory efficiency
-            bnb_config = BitsAndBytesConfig(
-                load_in_4bit=True,
-                bnb_4bit_use_double_quant=True,
-                bnb_4bit_quant_type="nf4",
-                bnb_4bit_compute_dtype=torch.bfloat16
+            # Check if llama3.2 model is available
+            models_data = response.json()
+            models = models_data.get('models', [])
+            model_names = [model['name'] for model in models]
+            
+            # Check for llama3.2 model
+            llama_available = any('llama3.2' in name for name in model_names)
+            
+            if not llama_available:
+                print("❌ LLaMA model not found in Ollama. Please pull it first:")
+                print("   docker exec ollama ollama pull llama3.2:latest")
+                return False
+            
+            # Test model inference
+            test_response = requests.post(
+                f"{self.ollama_base_url}/api/generate",
+                json={
+                    "model": self.model_name,
+                    "prompt": "Test",
+                    "stream": False,
+                    "options": {"num_predict": 5}
+                },
+                timeout=30
             )
             
-            print("Loading LLaMA tokenizer...")
-            self.tokenizer = AutoTokenizer.from_pretrained(
-                model_name,
-                cache_dir=self.cache_dir,
-                trust_remote_code=True
-            )
-            
-            # Add padding token if not present
-            if self.tokenizer.pad_token is None:
-                self.tokenizer.pad_token = self.tokenizer.eos_token
-            
-            print("Loading LLaMA model...")
-            self.model = AutoModelForCausalLM.from_pretrained(
-                model_name,
-                quantization_config=bnb_config,
-                device_map="auto",
-                cache_dir=self.cache_dir,
-                trust_remote_code=True,
-                torch_dtype=torch.float16
-            )
+            if test_response.status_code != 200:
+                print(f"❌ LLaMA model test failed: {test_response.status_code}")
+                return False
             
             self.is_initialized = True
-            print(f"✅ LLaMA model loaded on {self.device}")
+            print(f"✅ LLaMA model connected via Ollama at {self.ollama_base_url}")
             return True
             
+        except requests.exceptions.ConnectionError:
+            print(f"❌ Cannot connect to Ollama at {self.ollama_base_url}")
+            return False
         except Exception as e:
             print(f"❌ LLaMA initialization failed: {e}")
             return False
@@ -196,7 +187,15 @@ class EnglishProcessor:
             return text  # Return original if normalization fails
     
     def extract_narrative_elements(self, text: str) -> List[str]:
-        """Extract narrative elements like characters, settings, plot devices"""
+        """Extract narrative elements using LLaMA semantic analysis"""
+        # Fallback to regex if LLaMA is not available
+        if not self.is_initialized:
+            return self._extract_narrative_elements_regex(text)
+        
+        return asyncio.run(self._extract_narrative_elements_llama(text))
+    
+    def _extract_narrative_elements_regex(self, text: str) -> List[str]:
+        """Fallback regex-based narrative element extraction"""
         elements = []
         
         # Character indicators
@@ -234,8 +233,78 @@ class EnglishProcessor:
         
         return unique_elements[:10]  # Return top 10
     
+    async def _extract_narrative_elements_llama(self, text: str) -> List[str]:
+        """Extract narrative elements using LLaMA semantic analysis"""
+        try:
+            narrative_prompt = f"""[INST] You are a professional narrative analyst specializing in ghost stories and horror fiction. Please analyze the following text and extract key narrative elements including characters, settings, plot devices, and story structure components.
+
+Text to analyze: {text}
+
+Please identify and extract the following types of narrative elements:
+1. Characters (names, pronouns, character types)
+2. Settings (locations, time periods, atmospheric elements)
+3. Plot devices (story transitions, narrative techniques)
+4. Story structure (opening elements, development, climax indicators)
+
+Respond in JSON format with an "elements" array containing the narrative elements you find:
+{{"elements": ["element1", "element2", ...]}}
+
+Focus on elements that are important for understanding the story structure and atmosphere. [/INST]"""
+            
+            # Call Ollama API
+            response = requests.post(
+                f"{self.ollama_base_url}/api/generate",
+                json={
+                    "model": self.model_name,
+                    "prompt": narrative_prompt,
+                    "stream": False,
+                    "options": {
+                        "temperature": 0.3,
+                        "top_p": 0.8,
+                        "num_predict": 512
+                    }
+                },
+                timeout=60
+            )
+            
+            if response.status_code != 200:
+                print(f"❌ Ollama API error: {response.status_code}")
+                return self._extract_narrative_elements_regex(text)
+            
+            result = response.json()
+            response_text = result.get('response', '').strip()
+            
+            # Parse JSON response
+            try:
+                narrative_data = json.loads(response_text)
+                elements = narrative_data.get('elements', [])
+                
+                # Validate and clean the results
+                valid_elements = []
+                for element in elements:
+                    if isinstance(element, str) and len(element.strip()) > 0 and len(element) < 50:
+                        valid_elements.append(element.strip().lower())
+                
+                return valid_elements[:10]  # Limit to top 10
+                
+            except json.JSONDecodeError:
+                print("⚠️  LLaMA narrative response not valid JSON, using regex fallback")
+                return self._extract_narrative_elements_regex(text)
+                
+        except Exception as e:
+            print(f"❌ LLaMA narrative extraction failed: {e}")
+            return self._extract_narrative_elements_regex(text)
+    
     def extract_horror_indicators(self, text: str) -> List[str]:
-        """Extract horror and suspense indicators"""
+        """Extract horror and suspense indicators using LLaMA understanding"""
+        # Fallback to regex if LLaMA is not available
+        if not self.is_initialized:
+            return self._extract_horror_indicators_regex(text)
+        
+        return asyncio.run(self._extract_horror_indicators_llama(text))
+    
+    def _extract_horror_indicators_regex(self, text: str) -> List[str]:
+        """Fallback regex-based horror indicator extraction"""
         indicators = []
         
         # Fear and horror keywords
@@ -258,6 +327,69 @@ class EnglishProcessor:
         
         return list(set(indicators))[:8]  # Return unique, limit to 8
     
+    async def _extract_horror_indicators_llama(self, text: str) -> List[str]:
+        """Extract horror indicators using LLaMA understanding"""
+        try:
+            horror_prompt = f"""[INST] You are a professional horror and suspense analyst specializing in ghost stories and supernatural fiction. Please analyze the following text and identify horror indicators, fear elements, and suspense-building techniques.
+
+Text to analyze: {text}
+
+Please identify and extract the following types of horror indicators:
+1. Fear expressions (words and phrases indicating fear, terror, anxiety)
+2. Physical reactions (bodily responses to fear and horror)
+3. Atmospheric elements (environmental descriptions that create suspense)
+4. Sensory horror (sounds, sights, feelings that build tension)
+5. Supernatural elements (ghostly, paranormal, or otherworldly aspects)
+
+Respond in JSON format with a "horror_indicators" array containing the indicators you find:
+{{"horror_indicators": ["indicator1", "indicator2", ...]}}
+
+Focus on elements that effectively build horror atmosphere and create fear in readers. [/INST]"""
+            
+            # Call Ollama API
+            response = requests.post(
+                f"{self.ollama_base_url}/api/generate",
+                json={
+                    "model": self.model_name,
+                    "prompt": horror_prompt,
+                    "stream": False,
+                    "options": {
+                        "temperature": 0.3,
+                        "top_p": 0.8,
+                        "num_predict": 512
+                    }
+                },
+                timeout=60
+            )
+            
+            if response.status_code != 200:
+                print(f"❌ Ollama API error: {response.status_code}")
+                return self._extract_horror_indicators_regex(text)
+            
+            result = response.json()
+            response_text = result.get('response', '').strip()
+            
+            # Parse JSON response
+            try:
+                horror_data = json.loads(response_text)
+                indicators = horror_data.get('horror_indicators', [])
+                
+                # Validate and clean the results
+                valid_indicators = []
+                for indicator in indicators:
+                    if isinstance(indicator, str) and len(indicator.strip()) > 0 and len(indicator) < 30:
+                        valid_indicators.append(indicator.strip().lower())
+                
+                return valid_indicators[:8]  # Limit to top 8
+                
+            except json.JSONDecodeError:
+                print("⚠️  LLaMA horror response not valid JSON, using regex fallback")
+                return self._extract_horror_indicators_regex(text)
+                
+        except Exception as e:
+            print(f"❌ LLaMA horror extraction failed: {e}")
+            return self._extract_horror_indicators_regex(text)
+    
     def calculate_dialogue_ratio(self, text: str) -> float:
         """Calculate percentage of text that is dialogue"""
         # Simple dialogue detection using quotes
@@ -278,7 +410,16 @@ class EnglishProcessor:
         return min(1.0, dialogue_chars / total_chars)
     
     def extract_keywords_nltk(self, text: str) -> List[str]:
-        """Extract keywords using NLTK"""
+        """Extract keywords using LLM-powered extraction"""
+        # Use LLaMA for keyword extraction if available
+        if self.is_initialized:
+            return asyncio.run(self._extract_keywords_llama(text))
+        
+        # Fallback to NLTK if LLaMA not available
+        return self._extract_keywords_nltk_fallback(text)
+    
+    def _extract_keywords_nltk_fallback(self, text: str) -> List[str]:
+        """Fallback NLTK-based keyword extraction"""
         if not NLTK_AVAILABLE:
             return []
         
@@ -302,6 +443,73 @@ class EnglishProcessor:
         except Exception as e:
             print(f"⚠️  NLTK keyword extraction failed: {e}")
             return []
+    
+    async def _extract_keywords_llama(self, text: str) -> List[str]:
+        """Extract keywords using LLaMA-powered semantic analysis"""
+        try:
+            keyword_prompt = f"""[INST] You are a professional text analyst specializing in semantic keyword extraction for horror and ghost stories. Please analyze the following text and extract the most important and meaningful keywords that capture the essence of the content.
+
+Text to analyze: {text}
+
+Please extract keywords that are:
+1. Semantically important to the story
+2. Relevant for search and categorization
+3. Representative of the main themes and concepts
+4. Useful for content discovery and recommendation
+
+Avoid common stop words and focus on nouns, significant verbs, and descriptive adjectives that define the story's character.
+
+Respond in JSON format with a "keywords" array containing the most important keywords:
+{{"keywords": ["keyword1", "keyword2", ...]}}
+
+Limit to the 10 most important keywords. [/INST]"""
+            
+            # Call Ollama API
+            response = requests.post(
+                f"{self.ollama_base_url}/api/generate",
+                json={
+                    "model": self.model_name,
+                    "prompt": keyword_prompt,
+                    "stream": False,
+                    "options": {
+                        "temperature": 0.3,
+                        "top_p": 0.8,
+                        "num_predict": 300
+                    }
+                },
+                timeout=60
+            )
+            
+            if response.status_code != 200:
+                print(f"❌ Ollama API error: {response.status_code}")
+                return self._extract_keywords_nltk_fallback(text)
+            
+            result = response.json()
+            response_text = result.get('response', '').strip()
+            
+            # Parse JSON response
+            try:
+                keyword_data = json.loads(response_text)
+                keywords = keyword_data.get('keywords', [])
+                
+                # Validate and clean the results
+                valid_keywords = []
+                for keyword in keywords:
+                    if (isinstance(keyword, str) and 
+                        len(keyword.strip()) > 2 and 
+                        len(keyword) < 25 and
+                        keyword.lower() not in self.stop_words):
+                        valid_keywords.append(keyword.strip().lower())
+                
+                return valid_keywords[:10]  # Limit to top 10
+                
+            except json.JSONDecodeError:
+                print("⚠️  LLaMA keyword response not valid JSON, using NLTK fallback")
+                return self._extract_keywords_nltk_fallback(text)
+                
+        except Exception as e:
+            print(f"❌ LLaMA keyword extraction failed: {e}")
+            return self._extract_keywords_nltk_fallback(text)
     
     async def chunk_story_with_llama(self, story_text: str, title: str = "") -> List[EnglishChunk]:
         """
@@ -339,28 +547,28 @@ Please respond in JSON format with a "chunks" array, where each chunk contains:
 
 [/INST]"""
             
-            # Tokenize the prompt
-            inputs = self.tokenizer.encode(
-                chunking_prompt, 
-                return_tensors="pt", 
-                max_length=4096,
-                truncation=True
-            ).to(self.device)
+            # Call Ollama API
+            response = requests.post(
+                f"{self.ollama_base_url}/api/generate",
+                json={
+                    "model": self.model_name,
+                    "prompt": chunking_prompt,
+                    "stream": False,
+                    "options": {
+                        "temperature": self.model_config.temperature,
+                        "top_p": self.model_config.top_p,
+                        "num_predict": 2048
+                    }
+                },
+                timeout=120  # Longer timeout for chunking
+            )
             
-            # Generate response with LLaMA
-            with torch.no_grad():
-                outputs = self.model.generate(
-                    inputs,
-                    max_new_tokens=2048,
-                    temperature=self.model_config.temperature,
-                    top_p=self.model_config.top_p,
-                    do_sample=True,
-                    pad_token_id=self.tokenizer.eos_token_id
-                )
-            
-            # Decode response
-            response = self.tokenizer.decode(outputs[0], skip_special_tokens=True)
-            response_text = response[len(chunking_prompt):].strip()
+            if response.status_code != 200:
+                print(f"❌ Ollama API error: {response.status_code}")
+                llama_chunks = self._fallback_chunking(normalized_text)
+            else:
+                result = response.json()
+                response_text = result.get('response', '').strip()
             
             # Parse JSON response from LLaMA
             try:
@@ -405,18 +613,22 @@ Please respond in JSON format with a "chunks" array, where each chunk contains:
                     horror_indicators=horror_indicators[:8],  # Limit to top 8
                     dialogue_ratio=dialogue_ratio,
                     processing_metadata={
-                        'model_used': 'llama3.2',
+                        'model_used': 'llama3.2:latest',
                         'processing_time': (datetime.now() - start_time).total_seconds(),
                         'normalization_applied': True,
-                        'keyword_extraction_method': 'nltk' if NLTK_AVAILABLE else 'regex'
+                        'keyword_extraction_method': 'llama' if self.is_initialized else ('nltk' if NLTK_AVAILABLE else 'regex')
                     }
                 )
                 
                 chunks.append(chunk)
             
-            # Calculate cost (estimate based on tokens)
-            total_tokens = len(inputs[0]) + sum(len(self.tokenizer.encode(chunk.processed_text)) for chunk in chunks)
-            estimated_cost = self._calculate_processing_cost(total_tokens)
+            # Calculate cost (estimate based on character count for Ollama)
+            input_chars = len(chunking_prompt)
+            output_chars = sum(len(chunk.processed_text) for chunk in chunks)
+            total_chars = input_chars + output_chars
+            # Rough estimate: 1 token ≈ 4 characters for English
+            estimated_tokens = total_chars // 4
+            estimated_cost = self._calculate_processing_cost(estimated_tokens)
             self.total_cost += estimated_cost
             
             processing_time_ms = int((datetime.now() - start_time).total_seconds() * 1000)
@@ -551,7 +763,7 @@ Please respond in JSON format with a "chunks" array, where each chunk contains:
             
             # Calculate total cost for this processing
             total_cost = sum(
-                self._calculate_processing_cost(chunk.word_count * 1.3)  # Estimate tokens from words
+                self._calculate_processing_cost(chunk.word_count * 4)  # Estimate chars from words
                 for chunk in chunks
             )
             
@@ -564,7 +776,7 @@ Please respond in JSON format with a "chunks" array, where each chunk contains:
                     'language': 'en',
                     'total_words': len(story_text.split()),
                     'chunks_generated': len(chunks),
-                    'model_used': 'llama3.2',
+                    'model_used': 'llama3.2:latest',
                     'normalization_applied': True,
                     'avg_dialogue_ratio': sum(chunk.dialogue_ratio for chunk in chunks) / len(chunks) if chunks else 0,
                     'narrative_elements_found': sum(len(chunk.narrative_elements) for chunk in chunks),
@@ -591,23 +803,18 @@ Please respond in JSON format with a "chunks" array, where each chunk contains:
     def get_processing_stats(self) -> Dict:
         """Get comprehensive processing statistics"""
         return {
-            'processor_type': 'english_llama',
-            'model_name': 'llama3.2',
-            'device': self.device,
+            'processor_type': 'english_llama_ollama',
+            'model_name': 'llama3.2:latest',
+            'ollama_url': self.ollama_base_url,
             'is_initialized': self.is_initialized,
             'total_cost': self.total_cost,
             'processing_stats': self.processing_stats,
-            'nltk_available': NLTK_AVAILABLE,
-            'transformers_available': TRANSFORMERS_AVAILABLE
+            'nltk_available': NLTK_AVAILABLE
         }
     
     async def cleanup(self):
         """Cleanup resources"""
-        if self.model:
-            del self.model
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-        
+        # No model cleanup needed for Ollama API
         print("🧹 English processor resources cleaned up")
 
 

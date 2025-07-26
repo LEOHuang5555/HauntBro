@@ -15,7 +15,7 @@ from pathlib import Path
 
 # Add project paths
 sys.path.append(str(Path(__file__).parent.parent.parent))
-from etl.processing.config import CONFIG
+from etl.config.config import CONFIG
 
 
 class AlertSeverity(Enum):

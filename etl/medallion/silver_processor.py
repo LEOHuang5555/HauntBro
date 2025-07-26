@@ -4,7 +4,6 @@ Integrates multi-language models for content cleaning, chunking, and embedding g
 """
 
 import asyncio
-import asyncpg
 import json
 import uuid
 from datetime import datetime, timezone
@@ -16,7 +15,8 @@ import unicodedata
 
 # Add parent directories to path for imports
 sys.path.append(str(Path(__file__).parent.parent.parent))
-from etl.processing.config import CONFIG
+from etl.config.config import CONFIG
+from etl.processing.database_orm import etl_db, get_unprocessed_stories, update_story_processing_status, save_silver_data
 from etl.models.chinese_processor import ChineseProcessor, ChineseChunk
 from etl.models.english_processor import EnglishProcessor, EnglishChunk
 from etl.models.embedding_manager import EmbeddingManager
@@ -61,7 +61,7 @@ class SilverProcessor:
     
     def __init__(self):
         """Initialize silver processor with language-specific models"""
-        self.pool = None
+        self.db_manager = etl_db
         self.db_config = CONFIG["database"]
         self.chunking_config = CONFIG["chunking"]
         
@@ -93,18 +93,11 @@ class SilverProcessor:
         try:
             print("🚀 Initializing Silver Layer Processor...")
             
-            # Initialize database connection pool
-            self.pool = await asyncpg.create_pool(
-                host=self.db_config.host,
-                port=self.db_config.port,
-                database=self.db_config.database,
-                user=self.db_config.username,
-                password=self.db_config.password,
-                min_size=self.db_config.min_connections,
-                max_size=self.db_config.max_connections,
-                command_timeout=120  # Longer timeout for model operations
-            )
-            print("✅ Database connection pool created")
+            # Initialize database ORM manager
+            if not await self.db_manager.initialize():
+                print("❌ Database ORM manager initialization failed")
+                return False
+            print("✅ Database ORM manager initialized")
             
             # Initialize language processors
             print("Initializing Chinese processor (DeepSeek)...")
@@ -128,10 +121,7 @@ class SilverProcessor:
     
     async def disconnect(self):
         """Close all connections and cleanup resources"""
-        if self.pool:
-            await self.pool.close()
-            print("Database connections closed")
-        
+        await self.db_manager.disconnect()
         await self.chinese_processor.cleanup()
         await self.english_processor.cleanup()
         print("🧹 Silver processor resources cleaned up")
@@ -228,100 +218,107 @@ class SilverProcessor:
         return round(min(1.0, max(0.0, score)), 3)
     
     async def get_unprocessed_stories(self, limit: int = 50) -> List[Dict]:
-        """Get bronze stories that haven't been processed to silver layer"""
-        query = """
-        SELECT bs.id, bs.title, bs.content, bs.source, bs.source_url, 
-               bs.author, bs.post_date, bs.scraped_at, bs.raw_metadata,
-               bsp.processing_status, bsp.retry_count
-        FROM bronze_stories bs
-        LEFT JOIN bronze_story_processing bsp ON bs.id = bsp.story_id
-        LEFT JOIN silver_story_chunks ssc ON bs.id = ssc.story_id
-        WHERE (bsp.processing_status IS NULL OR bsp.processing_status IN ('pending', 'failed'))
-        AND ssc.story_id IS NULL  -- Not yet processed into chunks
-        AND LENGTH(bs.content) >= $1  -- Minimum content length
-        AND bs.content IS NOT NULL
-        AND (bsp.retry_count IS NULL OR bsp.retry_count < 3)  -- Limit retries
-        ORDER BY bs.scraped_at DESC
-        LIMIT $2
-        """
-        
+        """Get bronze stories that haven't been processed to silver layer using ORM"""
         try:
-            async with self.pool.acquire() as conn:
-                rows = await conn.fetch(query, self.chunking_config.min_chunk_size, limit)
-                return [dict(row) for row in rows]
+            stories = await self.db_manager.get_unprocessed_bronze_stories(
+                limit=limit,
+                min_content_length=self.chunking_config.min_chunk_size
+            )
+            
+            # Convert ORM objects to dictionaries for compatibility
+            return [
+                {
+                    'id': str(story.id),
+                    'title': story.title,
+                    'content': story.content,
+                    'source': story.source,
+                    'source_url': story.source_url,
+                    'author': story.author,
+                    'post_date': story.post_date,
+                    'scraped_at': story.scraped_at,
+                    'raw_metadata': story.raw_metadata
+                }
+                for story in stories
+            ]
         except Exception as e:
             print(f"❌ Error fetching unprocessed stories: {e}")
             return []
     
-    async def update_processing_status(self, story_id: str, status: str, metadata: Dict = None, error_msg: str = None):
-        """Update processing status for a story"""
-        query = """
-        INSERT INTO bronze_story_processing (
-            story_id, processing_status, processing_metadata, error_message, 
-            retry_count, updated_at
-        ) VALUES ($1, $2, $3, $4, 0, NOW())
-        ON CONFLICT (story_id) DO UPDATE SET
-            processing_status = $2,
-            processing_metadata = COALESCE(bronze_story_processing.processing_metadata, '{}'::jsonb) || $3::jsonb,
-            error_message = $4,
-            retry_count = CASE WHEN $2 = 'failed' THEN bronze_story_processing.retry_count + 1 ELSE bronze_story_processing.retry_count END,
-            updated_at = NOW()
-        """
-        
+    async def update_processing_status(self, story_id: str, status: str, metadata: Dict = None, error_msg: str = None, etl_run_id: str = None):
+        """Update processing status for a story using ORM"""
         try:
-            async with self.pool.acquire() as conn:
-                await conn.execute(
-                    query,
-                    story_id,
-                    status,
-                    json.dumps(metadata or {}),
-                    error_msg
-                )
+            await self.db_manager.update_processing_status(
+                story_id=story_id,
+                status=status,
+                metadata=metadata,
+                error_message=error_msg,
+                etl_run_id=etl_run_id
+            )
         except Exception as e:
             print(f"❌ Error updating processing status: {e}")
     
+    async def save_story_to_silver(self, story_data: Dict, quality_score: float, language: str, metadata: Dict) -> bool:
+        """Save processed story to silver_stories table using ORM"""
+        try:
+            story_id = str(story_data['id'])
+            content = story_data.get('content', '')
+            
+            silver_story_data = {
+                'title': story_data.get('title', ''),
+                'cleaned_content': content,
+                'language_detected': language,
+                'quality_score': quality_score,
+                'word_count': len(content.split()),
+                'character_count': len(content),
+                'processing_metadata': metadata
+            }
+            
+            await self.db_manager.create_silver_story(
+                bronze_story_id=story_id,
+                **silver_story_data
+            )
+            
+            print(f"✅ Saved story to silver_stories table")
+            return True
+            
+        except Exception as e:
+            print(f"❌ Error saving story to silver layer: {e}")
+            return False
+    
     async def save_chunks_to_silver(self, chunks: List[Dict], story_id: str) -> bool:
-        """Save processed chunks to silver_story_chunks table"""
+        """Save processed chunks to silver_story_chunks table using ORM"""
         if not chunks:
             return True
         
-        insert_query = """
-        INSERT INTO silver_story_chunks (
-            id, story_id, chunk_text, chunk_context, chunk_order, chunk_type,
-            overlap_start, overlap_end, content_embedding, search_embedding,
-            chunk_length, chunk_word_count, semantic_keywords,
-            embedding_model, embedding_version, embedding_model_version,
-            processing_language, chunk_quality_score, embedding_cost, created_at
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, NOW())
-        ON CONFLICT (id) DO NOTHING  -- Avoid duplicates
-        """
-        
         try:
-            async with self.pool.acquire() as conn:
-                async with conn.transaction():
-                    for chunk in chunks:
-                        await conn.execute(
-                            insert_query,
-                            chunk['id'],
-                            story_id,
-                            chunk['chunk_text'],
-                            chunk['chunk_context'],
-                            chunk['chunk_order'],
-                            chunk['chunk_type'],
-                            chunk.get('overlap_start', 0),
-                            chunk.get('overlap_end', 0),
-                            json.dumps(chunk.get('content_embedding', [])),  # Store as JSON for now
-                            json.dumps(chunk.get('search_embedding', [])),   # Store as JSON for now
-                            chunk['chunk_length'],
-                            chunk['chunk_word_count'],
-                            chunk.get('semantic_keywords', []),
-                            chunk.get('embedding_model', 'unknown'),
-                            chunk.get('embedding_version', '1.0'),
-                            chunk.get('embedding_model_version', 'unknown'),
-                            chunk.get('processing_language', 'unknown'),
-                            chunk.get('chunk_quality_score', 0.0),
-                            chunk.get('embedding_cost', 0.0)
-                        )
+            # Prepare chunks data for ORM
+            chunks_data = []
+            for chunk in chunks:
+                chunk_data = {
+                    'chunk_text': chunk['chunk_text'],
+                    'chunk_context': chunk['chunk_context'],
+                    'chunk_order': chunk['chunk_order'],
+                    'chunk_type': chunk['chunk_type'],
+                    'overlap_start': chunk.get('overlap_start', 0),
+                    'overlap_end': chunk.get('overlap_end', 0),
+                    'content_embedding': json.dumps(chunk.get('content_embedding', [])),
+                    'search_embedding': json.dumps(chunk.get('search_embedding', [])),
+                    'chunk_length': chunk['chunk_length'],
+                    'chunk_word_count': chunk['chunk_word_count'],
+                    'semantic_keywords': chunk.get('semantic_keywords', []),
+                    'embedding_model': chunk.get('embedding_model', 'unknown'),
+                    'embedding_version': chunk.get('embedding_version', '1.0'),
+                    'embedding_model_version': chunk.get('embedding_model_version', 'unknown'),
+                    'processing_language': chunk.get('processing_language', 'unknown'),
+                    'chunk_quality_score': chunk.get('chunk_quality_score', 0.0),
+                    'embedding_cost': chunk.get('embedding_cost', 0.0)
+                }
+                chunks_data.append(chunk_data)
+            
+            await self.db_manager.create_silver_story_chunks(
+                chunks_data=chunks_data,
+                story_id=story_id
+            )
             
             print(f"✅ Saved {len(chunks)} chunks to silver layer")
             return True
@@ -348,7 +345,8 @@ class SilverProcessor:
             # Update status to processing
             await self.update_processing_status(
                 story_id, 'processing', 
-                {'etl_run_id': etl_run_id, 'start_time': start_time.isoformat()}
+                {'etl_run_id': etl_run_id, 'start_time': start_time.isoformat()},
+                etl_run_id=etl_run_id
             )
             
             # Extract story content
@@ -369,7 +367,8 @@ class SilverProcessor:
                         'reason': 'low_quality',
                         'quality_score': quality_score,
                         'min_threshold': self.min_quality_score
-                    }
+                    },
+                    etl_run_id=etl_run_id
                 )
                 
                 self.stats['skipped_low_quality'] += 1
@@ -492,8 +491,15 @@ class SilverProcessor:
             
             total_cost = model_cost + embedding_cost
             
+            # Save story to silver_stories table first
+            story_success = await self.save_story_to_silver(
+                story_data, quality_score, language, processor_metadata
+            )
+            
             # Save chunks to silver layer
-            success = await self.save_chunks_to_silver(chunks, story_id)
+            chunks_success = await self.save_chunks_to_silver(chunks, story_id)
+            
+            success = story_success and chunks_success
             
             if success:
                 # Update processing status to completed
@@ -509,7 +515,9 @@ class SilverProcessor:
                     'processing_time_seconds': (datetime.now() - start_time).total_seconds()
                 }
                 
-                await self.update_processing_status(story_id, 'completed', processing_metadata)
+                await self.update_processing_status(
+                    story_id, 'completed', processing_metadata, etl_run_id=etl_run_id
+                )
                 
                 # Update statistics
                 self.stats['total_processed'] += 1
@@ -546,7 +554,8 @@ class SilverProcessor:
             await self.update_processing_status(
                 story_id, 'failed',
                 {'etl_run_id': etl_run_id, 'error_type': type(e).__name__},
-                error_msg
+                error_msg,
+                etl_run_id=etl_run_id
             )
             
             self.stats['failed_stories'] += 1

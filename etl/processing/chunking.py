@@ -10,7 +10,7 @@ import jieba  # Chinese text segmentation
 import nltk
 from nltk.tokenize import sent_tokenize
 # Remove duplicate import
-from config import CONFIG
+from etl.config.config import CONFIG
 
 # Download required NLTK data
 try:
