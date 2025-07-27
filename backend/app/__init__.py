@@ -1,1 +1,0 @@
-"""HauntBro backend application package."""
