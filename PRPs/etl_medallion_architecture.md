@@ -154,15 +154,13 @@ examples/
 ### Known Gotchas of our codebase & Library Quirks
 ```python
 # CRITICAL: Poetry virtual environment must be activated
-# poetry shell  # Required for all operations
+# poetry run python  # Required for all python script execution
 
-# CRITICAL: DeepSeek model requires specific Chinese encoding handling
-# Content must be in UTF-8 and Traditional Chinese characters normalized
-# Use unicodedata.normalize('NFKC', text) before processing
 
 # CRITICAL: PostgreSQL vector extension (pgvector) required for embeddings
 # CREATE EXTENSION IF NOT EXISTS vector;
-# Embeddings stored as VECTOR(768) type
+# Embeddings stored as VECTOR(1536) type
+# Configuration is placed at `.env`
 
 # CRITICAL: Airflow requires proper timezone handling
 # from airflow.utils.dates import days_ago
@@ -179,10 +177,6 @@ examples/
 
 # CRITICAL: Database connection pooling essential for concurrent processing
 # Use asyncpg.create_pool with min_size=5, max_size=20
-
-# CRITICAL: OpenAI embeddings have rate limits
-# Batch processing required: max 100 texts per request
-# Implement exponential backoff for 429 responses
 
 # GOTCHA: Chinese text tokenization differs from English
 # Use jieba for Chinese word segmentation, not standard split()
@@ -217,10 +211,9 @@ class SilverStoryChunks(Base):
     __tablename__ = 'silver_story_chunks'
     
     # Extend existing chunk fields
-    embedding_model_version = Column(String(50))  # Track model versions
+
     processing_language = Column(String(10))  # 'zh', 'en', 'mixed'
     chunk_quality_score = Column(Float)  # Quality assessment per chunk
-    embedding_cost = Column(Float)  # Cost tracking for optimization
 ```
 
 ### List of tasks to be completed to fulfill the PRP in the order they should be completed
