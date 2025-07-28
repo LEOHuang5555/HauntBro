@@ -163,13 +163,26 @@ The project now includes:
 
 **Bronze Layer (Raw Data)**
 - `bronze_stories`: Immutable scraped content with raw metadata
+  - Fields: id, title, content, source, source_url, author, post_date, scraped_at, raw_metadata
+  - Purpose: Preserve original scraped data without modification
+- `bronze_story_processing`: ETL processing status tracking
+  - Fields: id, bronze_story_id, status, etl_run_id, metadata, error_message, quality_checks
+  - Purpose: Track processing state and quality validation
 
 **Silver Layer (Processed Data)**
-- `silver_stories`: Cleaned story metadata with tags and metrics
-- `silver_story_chunks`: Story chunks for RAG retrieval with embeddings
+- `silver_stories`: Cleaned story metadata with tags and language detection
+  - Fields: id, bronze_story_id, title, cleaned_content, language_detected, word_count, tags
+  - Purpose: Store processed stories with enhanced metadata
+- `silver_story_chunks`: Story chunks for RAG retrieval with semantic embeddings
+  - Fields: id, silver_story_id, chunk_text, chunk_order, chunk_type, character_count, word_count, sentence_count
+  - Embedding fields: content_embedding, search_embedding, embedding_model, embedding_model_version
+  - Semantic fields: semantic_keywords, processing_language, model_used
+  - Purpose: Enable semantic search and RAG functionality
 
 **Gold Layer (Business Metrics)**
 - `gold_story_performance`: Aggregated performance metrics per story
+  - Fields: performance analytics and user engagement metrics
+  - Purpose: Business intelligence and content optimization
 
 **User Layer (Application Features)**
 - `users`: Authentication and user profiles
@@ -184,10 +197,14 @@ The project now includes:
 - `scraping_pipeline_metrics`: Airflow DAG execution metrics
 
 ### Key Features
-- **Immutable Bronze Layer**: Raw data preservation
-- **Automatic Triggers**: Performance metrics update on user actions
+- **Immutable Bronze Layer**: Raw data preservation with comprehensive processing tracking
+- **Multi-Language Processing**: Chinese (Traditional) and English text processing with GPT-4o-mini
+- **Semantic Search Ready**: JSON-encoded embedding vectors for content and search optimization
+- **Quality Assessment**: Automated content quality scoring and validation
+- **Embedding Models**: OpenAI (text-embedding-3-small/large) with Sentence Transformers fallback
+- **Cost Optimization**: Configurable embedding strategies (cost_optimized, quality_optimized, speed_optimized)
+- **Processing Metadata**: Complete tracking of models used, processing times, and language detection
 - **Full-text Search**: TSVECTOR indexes for fast text search
-- **Embedding Support**: Ready for pgvector when available
 - **Comprehensive Analytics**: User behavior and search tracking
 
 ## Docker Development Environment
@@ -245,19 +262,55 @@ The Ollama service automatically pulls:
 - **deepseek-coder**: For Chinese text processing and code generation
 
 ### ETL Pipeline Execution
-The medallion architecture ETL pipeline can be executed via:
-1. **Airflow DAGs**: Scheduled execution through web interface
-2. **Direct Python**: Manual execution of individual processors
-3. **SQL-based**: Direct database processing for testing
+The medallion architecture ETL pipeline implements a comprehensive Bronze→Silver transformation:
 
-Example ETL execution:
-```bash
-# Test database connection and verify medallion schema
-docker exec hauntbro-db psql -U postgres -d hauntbro -c "SELECT COUNT(*) FROM bronze_stories;"
+#### Pipeline Architecture
+1. **Bronze to Silver ETL**: `etl/processing/scripts/run_bronze_to_silver_etl.py`
+   - Orchestrates complete transformation from raw to processed data
+   - Integrates language detection, chunking, and embedding generation
+   - Supports test mode and batch processing with controlled concurrency
 
-# Execute silver layer processing
-docker exec hauntbro-db psql -U postgres -d hauntbro -c "SELECT COUNT(*) FROM silver_story_chunks;"
-```
+2. **Language-Specific Processors**:
+   - **Chinese Processor**: `etl/models/chinese_processor.py` - GPT-4o-mini integration for Traditional Chinese text
+   - **English Processor**: `etl/models/english_processor.py` - GPT-4o-mini integration for English text
+   - **Silver Processor**: `etl/medallion/silver_processor.py` - Coordinating processor with quality assessment
+
+3. **Embedding Generation**: `etl/models/embedding_manager.py`
+   - Multi-model support: OpenAI (text-embedding-3-small/large) and Sentence Transformers
+   - Cost-optimized strategies with automatic fallbacks
+   - Batch processing with controlled concurrency
+
+#### Pipeline Features
+- **Quality Assessment**: Automated content scoring with configurable thresholds
+- **Multi-Language Support**: Automatic language detection and appropriate processor routing
+- **Embedding Strategies**: cost_optimized, quality_optimized, speed_optimized
+- **Processing Tracking**: Complete ETL run metadata and status tracking
+- **Error Handling**: Comprehensive error categorization and recovery
+- **Performance Monitoring**: Processing time, success rates, and language distribution analytics
+
+#### Execution Methods
+1. **Direct ETL Script**: 
+   ```bash
+   poetry run python etl/processing/scripts/run_bronze_to_silver_etl.py
+   poetry run python etl/processing/scripts/run_bronze_to_silver_etl.py --test-mode
+   poetry run python etl/processing/scripts/run_bronze_to_silver_etl.py --limit 50
+   ```
+
+2. **Individual Processors**:
+   ```bash
+   poetry run python etl/medallion/silver_processor.py --batch-size 10
+   poetry run python etl/models/chinese_processor.py --text "測試文本"
+   poetry run python etl/models/embedding_manager.py --text "example text"
+   ```
+
+3. **Database Verification**:
+   ```bash
+   # Check processing status
+   docker exec hauntbro-db psql -U postgres -d hauntbro -c "SELECT status, COUNT(*) FROM bronze_story_processing GROUP BY status;"
+   
+   # Verify embeddings generation
+   docker exec hauntbro-db psql -U postgres -d hauntbro -c "SELECT COUNT(*) FROM silver_story_chunks WHERE content_embedding IS NOT NULL;"
+   ```
 ### After Every Code Modification
 Follow this exact sequence for every change:
 
@@ -280,31 +333,41 @@ Follow this exact sequence for every change:
    poetry run pytest tests/test_[feature_name].py -v
    
    # Run full test suite if major changes
-   poetry run pytest tests/ --cov=src --cov-report=html
+   poetry run pytest tests/ --cov=etl --cov-report=html
    ```
 
-4. **Code Quality Checks**
+4. **ETL Pipeline Testing**
+   ```bash
+   # Test ETL components in isolation
+   poetry run python etl/models/chinese_processor.py --stats
+   poetry run python etl/models/embedding_manager.py --capabilities
+   
+   # Test Bronze to Silver pipeline in test mode
+   poetry run python etl/processing/scripts/run_bronze_to_silver_etl.py --test-mode --limit 5
+   ```
+
+5. **Code Quality Checks**
    ```bash
    # Coding style checking with Black
-   poetry run black src/ tests/ --check --diff
+   poetry run black etl/ tests/ --check --diff
    
    # If formatting needed:
-   poetry run black src/ tests/
+   poetry run black etl/ tests/
    ```
 
-5. **Lint Checking**
+6. **Lint Checking**
    ```bash
    # Flake8 for linting
-   poetry run flake8 src/ tests/ --max-line-length=88
+   poetry run flake8 etl/ tests/ --max-line-length=88
    
    # MyPy for type checking
-   poetry run mypy src/ --ignore-missing-imports
+   poetry run mypy etl/ --ignore-missing-imports
    ```
 
-6. **Hardcode Detection & Environment Variables**
+7. **Hardcode Detection & Environment Variables**
    ```bash
    # Check for hardcoded values (manual review)
-   grep -r "localhost\|127.0.0.1\|password\|secret\|api_key" src/ || echo "No hardcoded values found"
+   grep -r "localhost\|127.0.0.1\|password\|secret\|api_key" etl/ || echo "No hardcoded values found"
    
    # If hardcoded values found:
    # 1. Move to .env file
@@ -312,7 +375,7 @@ Follow this exact sequence for every change:
    # 3. Use python-dotenv or pydantic BaseSettings to load
    ```
 
-7. **Git Commit**
+8. **Git Commit**
    ```bash
    # Stage all changes
    git add .
@@ -326,7 +389,7 @@ Follow this exact sequence for every change:
    # git commit -m "refactor: completed search-engine-optimization - improved query performance by 40%"
    ```
 
-8. **Update Documentation**
+9. **Update Documentation**
    ```bash
    # Create or update README.md in current directory
    # Include:

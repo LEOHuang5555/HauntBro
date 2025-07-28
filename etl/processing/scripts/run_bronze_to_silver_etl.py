@@ -20,6 +20,7 @@ try:
     from etl.medallion.bronze_processor import BronzeProcessor
     from etl.medallion.silver_processor import SilverProcessor
     from etl.config.config import CONFIG
+    from etl.processing.database_orm import update_story_processing_status, save_silver_data
 except ImportError as e:
     print(f"Import error: {e}")
     print("Please run from project root or check module paths")
@@ -42,9 +43,10 @@ class BronzeToSilverETL:
         self.silver_processor = SilverProcessor()
         
         # ETL run metadata
-        self.etl_run_id = f"b2s_etl_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        import uuid
+        self.etl_run_id = uuid.uuid4()
         
-        # Processing statistics
+        # Processing statistics (MVP - no cost tracking)
         self.stats = {
             'start_time': None,
             'end_time': None,
@@ -53,7 +55,6 @@ class BronzeToSilverETL:
             'stories_skipped': 0,
             'stories_failed': 0,
             'total_chunks_generated': 0,
-            'total_processing_cost': 0.0,
             'language_distribution': {},
             'quality_score_distribution': {},
             'processing_errors': [],
@@ -160,14 +161,36 @@ class BronzeToSilverETL:
             print(f"   Story ID: {story_id}")
             print(f"   Content Length: {len(story_data.get('content', ''))} chars")
             
+            # Update status to processing
+            await update_story_processing_status(
+                story_id=story_id,
+                status='processing',
+                metadata={'etl_run_id': str(self.etl_run_id), 'pipeline': 'bronze_to_silver'},
+                etl_run_id=str(self.etl_run_id)
+            )
+            
             # Process through silver layer
             result = await self.silver_processor.process_story(story_data, self.etl_run_id)
             
-            # Update statistics
+            # Update statistics and status based on result
             if result.success:
+                # Update status to completed
+                await update_story_processing_status(
+                    story_id=story_id,
+                    status='completed',
+                    metadata={
+                        'etl_run_id': str(self.etl_run_id),
+                        'pipeline': 'bronze_to_silver',
+                        'chunks_generated': result.chunks_generated,
+                        'language_detected': result.language_detected,
+                        'quality_score': result.quality_score,
+                        'processing_time_ms': result.processing_time_ms
+                    },
+                    etl_run_id=str(self.etl_run_id)
+                )
+                
                 self.stats['stories_processed'] += 1
                 self.stats['total_chunks_generated'] += result.chunks_generated
-                self.stats['total_processing_cost'] += result.model_cost
                 
                 # Language distribution
                 lang = result.language_detected
@@ -180,20 +203,32 @@ class BronzeToSilverETL:
                     self.stats['quality_score_distribution'].get(quality_bucket, 0) + 1
                 
                 print(f"   ✅ Success: {result.chunks_generated} chunks, "
-                      f"${result.model_cost:.4f} cost, "
                       f"{result.processing_time_ms}ms")
                 
                 return {
                     'status': 'success',
                     'story_id': story_id,
                     'chunks': result.chunks_generated,
-                    'cost': result.model_cost,
                     'language': result.language_detected,
                     'quality_score': result.quality_score
                 }
             else:
                 # Handle different failure types
                 if "Quality score" in (result.error_message or ""):
+                    # Update status to skipped
+                    await update_story_processing_status(
+                        story_id=story_id,
+                        status='skipped',
+                        metadata={
+                            'etl_run_id': str(self.etl_run_id),
+                            'pipeline': 'bronze_to_silver',
+                            'reason': 'low_quality',
+                            'quality_score': result.quality_score
+                        },
+                        error_msg=result.error_message,
+                        etl_run_id=str(self.etl_run_id)
+                    )
+                    
                     self.stats['stories_skipped'] += 1
                     print(f"   ⚠️  Skipped: {result.error_message}")
                     return {
@@ -203,6 +238,18 @@ class BronzeToSilverETL:
                         'quality_score': result.quality_score
                     }
                 else:
+                    # Update status to failed
+                    await update_story_processing_status(
+                        story_id=story_id,
+                        status='failed',
+                        metadata={
+                            'etl_run_id': str(self.etl_run_id),
+                            'pipeline': 'bronze_to_silver'
+                        },
+                        error_msg=result.error_message,
+                        etl_run_id=str(self.etl_run_id)
+                    )
+                    
                     self.stats['stories_failed'] += 1
                     print(f"   ❌ Failed: {result.error_message}")
                     self.stats['processing_errors'].append({
@@ -219,6 +266,22 @@ class BronzeToSilverETL:
         except Exception as e:
             error_msg = f"Unexpected error processing story {story_id}: {str(e)}"
             print(f"   ❌ {error_msg}")
+            
+            # Update status to failed for unexpected errors
+            try:
+                await update_story_processing_status(
+                    story_id=story_id,
+                    status='failed',
+                    metadata={
+                        'etl_run_id': str(self.etl_run_id),
+                        'pipeline': 'bronze_to_silver',
+                        'error_type': 'unexpected_exception'
+                    },
+                    error_msg=error_msg,
+                    etl_run_id=str(self.etl_run_id)
+                )
+            except Exception as status_error:
+                print(f"   ⚠️  Failed to update processing status: {status_error}")
             
             self.stats['stories_failed'] += 1
             self.stats['processing_errors'].append({
@@ -343,14 +406,11 @@ class BronzeToSilverETL:
             success_rate = (self.stats['stories_processed'] / total_attempted) * 100
             print(f"   Success Rate: {success_rate:.1f}%")
         
-        # Cost Analysis
-        print(f"\n💰 COST ANALYSIS:")
-        print(f"   Total Processing Cost: ${self.stats['total_processing_cost']:.4f}")
-        if self.stats['stories_processed'] > 0:
-            cost_per_story = self.stats['total_processing_cost'] / self.stats['stories_processed']
-            cost_per_chunk = self.stats['total_processing_cost'] / max(self.stats['total_chunks_generated'], 1)
-            print(f"   Average Cost per Story: ${cost_per_story:.4f}")
-            print(f"   Average Cost per Chunk: ${cost_per_chunk:.6f}")
+        # MVP Processing Info
+        print(f"\n💰 MVP MODE INFO:")
+        print(f"   Cost tracking disabled for budget optimization")
+        print(f"   Embeddings skipped - will be generated on-demand")
+        print(f"   Focus: Story chunking and content processing only")
         
         # Language Distribution
         if self.stats['language_distribution']:
@@ -395,12 +455,13 @@ class BronzeToSilverETL:
         # Performance recommendations
         if self.stats['stories_processed'] > 0:
             print(f"\n💡 PERFORMANCE INSIGHTS:")
-            if self.stats['total_processing_cost'] > 1.0:
-                print("   • Consider using more free models to reduce costs")
             if total_time > 300:  # More than 5 minutes
                 print("   • Consider increasing batch size or concurrency for faster processing")
             if self.stats['stories_skipped'] > self.stats['stories_processed']:
                 print("   • High skip rate - consider adjusting quality thresholds")
+            if self.stats['total_chunks_generated'] > 0:
+                avg_chunks = self.stats['total_chunks_generated'] / self.stats['stories_processed']
+                print(f"   • Average {avg_chunks:.1f} chunks per story - good chunking performance")
 
 
 async def main():

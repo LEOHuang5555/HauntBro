@@ -152,7 +152,8 @@ class ETLDatabaseManager:
         status: str,
         metadata: Optional[Dict[str, Any]] = None,
         error_message: Optional[str] = None,
-        etl_run_id: Optional[str] = None
+        etl_run_id: Optional[str] = None,
+        quality_checks: Optional[Dict[str, Any]] = None
     ):
         """Update processing status for a bronze story using ORM"""
         async with self.get_session() as session:
@@ -179,6 +180,10 @@ class ETLDatabaseManager:
                     existing_metadata.update(metadata)
                     processing_record.processing_metadata = existing_metadata
                 
+                if quality_checks:
+                    # Update quality checks
+                    processing_record.quality_checks = quality_checks
+                
                 if status == 'failed':
                     processing_record.retry_count += 1
             else:
@@ -187,6 +192,7 @@ class ETLDatabaseManager:
                     story_id=story_id,
                     processing_status=status,
                     processing_metadata=metadata,
+                    quality_checks=quality_checks,
                     error_message=error_message,
                     etl_run_id=etl_run_id,
                     retry_count=1 if status == 'failed' else 0
@@ -203,10 +209,8 @@ class ETLDatabaseManager:
         title: str,
         cleaned_content: str,
         language_detected: str,
-        quality_score: float,
         word_count: int,
-        character_count: int,
-        processing_metadata: Dict[str, Any]
+        tags: List[str] = None
     ) -> SilverStory:
         """Create silver story record using ORM"""
         async with self.get_session() as session:
@@ -218,27 +222,35 @@ class ETLDatabaseManager:
             )
             silver_story = existing.scalar_one_or_none()
             
+            # Get bronze story to copy author and post_date
+            bronze_story_result = await session.execute(
+                select(BronzeStory).where(BronzeStory.id == bronze_story_id)
+            )
+            bronze_story = bronze_story_result.scalar_one_or_none()
+            
             if silver_story:
                 # Update existing record
                 silver_story.title = title
                 silver_story.cleaned_content = cleaned_content
                 silver_story.language_detected = language_detected
-                silver_story.content_quality_score = quality_score
                 silver_story.word_count = word_count
-                silver_story.character_count = character_count
-                silver_story.processing_metadata = processing_metadata
-                silver_story.updated_at = datetime.now(timezone.utc)
+                silver_story.tags = tags or []
+                silver_story.reading_time_minutes = max(1, word_count // 200)
+                if bronze_story:
+                    silver_story.author = bronze_story.author
+                    silver_story.post_date = bronze_story.post_date
             else:
-                # Create new record
+                # Create new record with fields that match the schema
                 silver_story = SilverStory(
                     bronze_story_id=bronze_story_id,
                     title=title,
                     cleaned_content=cleaned_content,
                     language_detected=language_detected,
-                    content_quality_score=quality_score,
                     word_count=word_count,
-                    character_count=character_count,
-                    processing_metadata=processing_metadata
+                    author=bronze_story.author if bronze_story else None,
+                    post_date=bronze_story.post_date if bronze_story else None,
+                    tags=tags or [],  # Use provided tags or empty array
+                    reading_time_minutes=max(1, word_count // 200)  # ~200 words per minute
                 )
                 session.add(silver_story)
             
@@ -250,30 +262,33 @@ class ETLDatabaseManager:
         chunks_data: List[Dict[str, Any]],
         story_id: str
     ) -> List[SilverStoryChunks]:
-        """Create silver story chunks using ORM batch operations"""
+        """Create silver story chunks using ORM batch operations - MVP schema"""
         async with self.get_session() as session:
             chunks = []
             
             for chunk_data in chunks_data:
+                # Map to schema fields including embeddings
                 chunk = SilverStoryChunks(
                     story_id=story_id,
                     chunk_text=chunk_data['chunk_text'],
-                    chunk_context=chunk_data.get('chunk_context', ''),
                     chunk_order=chunk_data['chunk_order'],
                     chunk_type=chunk_data.get('chunk_type', 'body'),
-                    overlap_start=chunk_data.get('overlap_start', 0),
-                    overlap_end=chunk_data.get('overlap_end', 0),
+                    
+                    # Metrics fields
+                    character_count=chunk_data.get('character_count', len(chunk_data['chunk_text'])),
+                    word_count=chunk_data.get('word_count', len(chunk_data['chunk_text'].split())),
+                    sentence_count=chunk_data.get('sentence_count', 0),
+                    
+                    # Extracted content
+                    semantic_keywords=chunk_data.get('semantic_keywords', []),
+                    
+                    # Processing metadata
+                    processing_language=chunk_data.get('processing_language', 'unknown'),
+                    model_used=chunk_data.get('model_used', 'gpt-4o-mini'),
+                    
+                    # Embedding fields for semantic search
                     content_embedding=chunk_data.get('content_embedding'),
                     search_embedding=chunk_data.get('search_embedding'),
-                    chunk_length=chunk_data['chunk_length'],
-                    chunk_word_count=chunk_data.get('chunk_word_count', 0),
-                    semantic_keywords=chunk_data.get('semantic_keywords', []),
-                    embedding_model=chunk_data.get('embedding_model', 'unknown'),
-                    embedding_version=chunk_data.get('embedding_version', '1.0'),
-                    embedding_model_version=chunk_data.get('embedding_model_version', 'unknown'),
-                    processing_language=chunk_data.get('processing_language', 'unknown'),
-                    chunk_quality_score=chunk_data.get('chunk_quality_score', 0.0),
-                    embedding_cost=chunk_data.get('embedding_cost', 0.0)
                 )
                 chunks.append(chunk)
                 session.add(chunk)
@@ -357,7 +372,8 @@ async def update_story_processing_status(
     status: str,
     metadata: Optional[Dict] = None,
     error_msg: Optional[str] = None,
-    etl_run_id: Optional[str] = None
+    etl_run_id: Optional[str] = None,
+    quality_checks: Optional[Dict] = None
 ):
     """Convenience function to update processing status"""
     await etl_db.update_processing_status(
@@ -365,7 +381,8 @@ async def update_story_processing_status(
         status=status,
         metadata=metadata,
         error_message=error_msg,
-        etl_run_id=etl_run_id
+        etl_run_id=etl_run_id,
+        quality_checks=quality_checks
     )
 
 

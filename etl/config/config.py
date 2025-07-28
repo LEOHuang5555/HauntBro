@@ -27,7 +27,7 @@ class ChunkingConfig:
     min_quality_score: float = 0.5
     max_chunks_per_story: int = 50
     
-    # Embedding settings
+    # Embedding settingsㄏ
     embedding_model: str = "text-embedding-3-small"
     embedding_dimension: int = 1536
     
@@ -52,6 +52,7 @@ class DatabaseConfig:
 class OpenAIConfig:
     """OpenAI API configuration"""
     api_key: str = os.getenv("OPENAI_API_KEY", "")
+    chunking_model: str = "gpt-4o-mini"  # Model for text chunking and processing
     embedding_model: str = "text-embedding-3-small"
     embedding_batch_size: int = 100
     max_retries: int = 3
