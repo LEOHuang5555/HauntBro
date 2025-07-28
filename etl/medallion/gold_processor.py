@@ -17,7 +17,7 @@ from collections import Counter, defaultdict
 
 # Add parent directories to path for imports
 sys.path.append(str(Path(__file__).parent.parent.parent))
-from etl.processing.config import CONFIG
+from etl.config.config import CONFIG
 from infrastructure.database.models import GoldLayerMetrics
 
 

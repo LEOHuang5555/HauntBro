@@ -3,7 +3,7 @@ import asyncpg
 import json
 from typing import List, Dict, Optional
 from datetime import datetime
-from config import CONFIG
+from etl.config.config import CONFIG
 
 class DatabaseManager:
     """Database operations for the chunking pipeline"""

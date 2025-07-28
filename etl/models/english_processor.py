@@ -4,26 +4,101 @@ Handles English ghost story processing with LLaMA models
 """
 
 import asyncio
-import torch
 import re
 import json
-from typing import List, Dict, Optional, Tuple, Any
+import requests
+from typing import List, Dict, Optional, Tuple, Any, Literal
 from dataclasses import dataclass
 from datetime import datetime
-import spacy
 from pathlib import Path
 import sys
+import time
+from pydantic import BaseModel, Field, field_validator
 
 # Add parent directories to path for imports
 sys.path.append(str(Path(__file__).parent.parent.parent))
-from etl.processing.config import CONFIG
+from etl.config.config import CONFIG, ModelConfig, ChunkingConfig
 
-# Transformers imports for LLaMA
-try:
-    from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig
-    TRANSFORMERS_AVAILABLE = True
-except ImportError:
-    TRANSFORMERS_AVAILABLE = False
+# Pydantic models for structured parsing
+class GPTChunk(BaseModel):
+    """Enhanced chunk model with strict validation for English text"""
+    text: str = Field(
+        description="Chunk text content, not empty"
+    )
+    type: Literal[
+        "opening",
+        "development", 
+        "body",
+        "climax",
+        "ending",
+        "transition",
+        "dialogue",
+        "description"
+    ] = Field(
+        default="body",
+        description="Narrative type of the chunk"
+    )
+    order: int = Field(
+        description="Sequential order of the chunk"
+    )
+    keywords: List[str] = Field(
+        default_factory=list,
+        min_items=0,
+        max_items=10,
+        description="Key terms or phrases from the chunk"
+    )
+    confidence_score: float = Field(
+        default=0.8,
+        ge=0.0,
+        le=1.0,
+        description="LLM confidence in chunking decision"
+    )
+    
+    @field_validator('text')
+    @classmethod
+    def validate_text(cls, v: str) -> str:
+        if not v or not v.strip():
+            raise ValueError("Text cannot be empty or whitespace only")
+        
+        # Check for reasonable English text content
+        english_chars = len(re.findall(r'[a-zA-Z]', v))
+        if english_chars < len(v) * 0.5:  # At least 50% English characters
+            raise ValueError("Text must contain substantial English content")
+        
+        # Remove excessive whitespace
+        cleaned = re.sub(r'\s+', ' ', v.strip())
+        return cleaned
+    
+    @field_validator('keywords')
+    @classmethod
+    def validate_keywords(cls, v: List[str]) -> List[str]:
+        if not v:
+            return []
+        
+        valid_keywords = []
+        for keyword in v:
+            if isinstance(keyword, str) and keyword.strip():
+                # Clean and validate keyword
+                clean_keyword = keyword.strip()
+                if (len(clean_keyword) >= 1 and 
+                    len(clean_keyword) <= 25 and
+                    not clean_keyword.isspace()):
+                    valid_keywords.append(clean_keyword)
+        
+        # Remove duplicates while preserving order
+        return list(dict.fromkeys(valid_keywords))
+
+class GPTChunkResponse(BaseModel):
+    chunks: List[GPTChunk]
+
+class NarrativeElementsResponse(BaseModel):
+    elements: List[str]
+
+class HorrorIndicatorsResponse(BaseModel):
+    horror_indicators: List[str]
+
+class KeywordsResponse(BaseModel):
+    keywords: List[str]
 
 # English text processing imports
 try:
@@ -37,19 +112,27 @@ except ImportError:
 
 @dataclass
 class EnglishChunk:
-    """English text chunk with narrative context"""
+    """English text chunk with semantic context"""
     chunk_id: str
     original_text: str
-    processed_text: str
+    normalized_text: str  # Renamed from processed_text for consistency
     chunk_order: int
-    chunk_type: str  # 'opening', 'body', 'climax', 'ending'
+    character_count: int  # Added for consistency with Chinese processor
     word_count: int
     sentence_count: int
     semantic_keywords: List[str]
-    narrative_elements: List[str]  # Character, setting, plot elements
-    horror_indicators: List[str]  # Fear, suspense, horror elements
     dialogue_ratio: float  # Percentage of text that is dialogue
     processing_metadata: Dict[str, Any]
+    chunk_type: Literal[
+        "opening",
+        "development",
+        "body",
+        "climax",
+        "ending",
+        "transition",
+        "dialogue",
+        "description"
+    ] = "body"  # Standardized chunk types
 
 
 @dataclass
@@ -58,43 +141,83 @@ class ProcessingResult:
     success: bool
     chunks: List[EnglishChunk]
     processing_time_ms: int
-    model_cost: float
     error_message: Optional[str] = None
     metadata: Optional[Dict] = None
 
 
 class EnglishProcessor:
     """
-    LLaMA-powered English text processor for ghost stories
+    GPT-4o-mini-powered English text processor for ghost stories
     Handles narrative structure preservation, dialogue detection, and semantic chunking
     """
     
+    def _extract_json_from_response(self, response_text: str) -> Optional[Dict]:
+        """Extract JSON from API response, handling extra text"""
+        # Try parsing the response as-is first
+        try:
+            return json.loads(response_text.strip())
+        except json.JSONDecodeError:
+            pass
+        
+        # Look for JSON content between markers
+        import re
+        json_patterns = [
+            r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}',  # Find any JSON object
+            r'```json\s*(\{.*?\})\s*```',  # JSON in code blocks
+            r'```\s*(\{.*?\})\s*```'  # JSON in generic code blocks
+        ]
+        
+        for pattern in json_patterns:
+            matches = re.findall(pattern, response_text, re.DOTALL)
+            for match in matches:
+                try:
+                    return json.loads(match.strip())
+                except json.JSONDecodeError:
+                    continue
+        
+        return None
+    
     def __init__(self, cache_dir: str = "./models"):
-        """Initialize English processor with LLaMA model"""
+        """Initialize English processor with Ollama LLaMA model"""
         self.cache_dir = Path(cache_dir)
         self.cache_dir.mkdir(exist_ok=True)
-        self.device = "cuda" if torch.cuda.is_available() else "cpu"
         
         # Model configuration
-        self.model_config = CONFIG["model"]
-        self.chunking_config = CONFIG["chunking"]
+        self.model_config: ModelConfig = CONFIG["model"]
+        self.chunking_config: ChunkingConfig = CONFIG["chunking"]  
         
-        # LLaMA model setup
-        self.tokenizer = None
-        self.model = None
+        # OpenAI configuration
+        self.openai_config = CONFIG["openai"]
+        self.model_name = "gpt-4o-mini"  # Cost-effective and reliable
         self.is_initialized = False
+        self.openai_client = None
         
         # English processing setup
         self._setup_english_processors()
         
-        # Cost tracking
-        self.total_cost = 0.0
+        # Processing statistics
         self.processing_stats = {
             'total_processed': 0,
             'total_chunks': 0,
             'avg_processing_time': 0.0,
             'errors': 0
         }
+        
+        # Rate limiting for OpenAI API (500 RPM limit)
+        self.last_api_call = 0
+        self.min_call_interval = 0.12  # 120ms between calls for 500 RPM
+    
+    async def _rate_limit_openai_call(self):
+        """Ensure we don't exceed OpenAI rate limits"""
+        current_time = time.time()
+        elapsed = current_time - self.last_api_call
+        
+        if elapsed < self.min_call_interval:
+            wait_time = self.min_call_interval - elapsed
+            print(f"⏱️  Rate limiting: waiting {wait_time:.1f}s before OpenAI call")
+            await asyncio.sleep(wait_time)
+        
+        self.last_api_call = time.time()
     
     def _setup_english_processors(self):
         """Setup English text processing tools"""
@@ -111,52 +234,40 @@ class EnglishProcessor:
             self.stop_words = set()
     
     async def initialize(self) -> bool:
-        """Initialize LLaMA model for English processing"""
-        if not TRANSFORMERS_AVAILABLE:
-            print("❌ Transformers library not available")
-            return False
-        
+        """Initialize OpenAI GPT-4o-mini for English processing"""
         try:
-            print("🚀 Initializing LLaMA model for English processing...")
+            print("🚀 Initializing GPT-4o-mini for English processing...")
             
-            # LLaMA model configuration - using Llama-2 7B chat model
-            model_name = "meta-llama/Llama-2-7b-chat-hf"
+            # Import OpenAI client
+            from openai import OpenAI
             
-            # Configure quantization for memory efficiency
-            bnb_config = BitsAndBytesConfig(
-                load_in_4bit=True,
-                bnb_4bit_use_double_quant=True,
-                bnb_4bit_quant_type="nf4",
-                bnb_4bit_compute_dtype=torch.bfloat16
+            # Check if API key is available
+            if not self.openai_config.api_key:
+                print("❌ OpenAI API key not found in configuration")
+                return False
+            
+            # Initialize OpenAI client
+            self.openai_client = OpenAI(api_key=self.openai_config.api_key)
+            
+            # Test model with a simple request
+            test_response = await asyncio.to_thread(
+                self.openai_client.chat.completions.create,
+                model=self.model_name,
+                messages=[{"role": "user", "content": "Test"}],
+                max_tokens=5,
+                temperature=0.3
             )
             
-            print("Loading LLaMA tokenizer...")
-            self.tokenizer = AutoTokenizer.from_pretrained(
-                model_name,
-                cache_dir=self.cache_dir,
-                trust_remote_code=True
-            )
-            
-            # Add padding token if not present
-            if self.tokenizer.pad_token is None:
-                self.tokenizer.pad_token = self.tokenizer.eos_token
-            
-            print("Loading LLaMA model...")
-            self.model = AutoModelForCausalLM.from_pretrained(
-                model_name,
-                quantization_config=bnb_config,
-                device_map="auto",
-                cache_dir=self.cache_dir,
-                trust_remote_code=True,
-                torch_dtype=torch.float16
-            )
+            if not test_response:
+                print("❌ GPT-4o-mini test failed")
+                return False
             
             self.is_initialized = True
-            print(f"✅ LLaMA model loaded on {self.device}")
+            print(f"✅ GPT-4o-mini initialized successfully for English processing")
             return True
             
         except Exception as e:
-            print(f"❌ LLaMA initialization failed: {e}")
+            print(f"❌ GPT-4o-mini initialization failed: {e}")
             return False
     
     def normalize_english_text(self, text: str) -> str:
@@ -195,68 +306,6 @@ class EnglishProcessor:
             print(f"❌ Text normalization failed: {e}")
             return text  # Return original if normalization fails
     
-    def extract_narrative_elements(self, text: str) -> List[str]:
-        """Extract narrative elements like characters, settings, plot devices"""
-        elements = []
-        
-        # Character indicators
-        character_patterns = [
-            r'\b(I|me|my|myself|we|us|our)\b',  # First person
-            r'\b(he|she|him|her|his|hers|they|them|their)\b',  # Third person
-            r'\b[A-Z][a-z]+\b(?:\s+[A-Z][a-z]+)*',  # Proper names
-        ]
-        
-        # Setting indicators  
-        setting_patterns = [
-            r'\b(house|home|school|hospital|church|cemetery|forest|basement|attic|bedroom|bathroom)\b',
-            r'\b(night|midnight|dark|darkness|shadow|moonlight|candlelight)\b',
-            r'\b(old|abandoned|empty|haunted|creepy|eerie)\b'
-        ]
-        
-        # Plot device indicators
-        plot_patterns = [
-            r'\b(suddenly|then|meanwhile|later|earlier|before|after)\b',
-            r'\b(heard|saw|felt|noticed|realized|discovered|found)\b',
-            r'\b(door|footsteps|voice|whisper|scream|cry|knock)\b'
-        ]
-        
-        all_patterns = character_patterns + setting_patterns + plot_patterns
-        
-        for pattern in all_patterns:
-            matches = re.findall(pattern, text, re.IGNORECASE)
-            elements.extend(matches)
-        
-        # Remove duplicates and common words
-        unique_elements = []
-        for element in set(elements):
-            if element.lower() not in self.stop_words and len(element) > 2:
-                unique_elements.append(element.lower())
-        
-        return unique_elements[:10]  # Return top 10
-    
-    def extract_horror_indicators(self, text: str) -> List[str]:
-        """Extract horror and suspense indicators"""
-        indicators = []
-        
-        # Fear and horror keywords
-        horror_patterns = [
-            # Direct fear words
-            r'\b(scared|afraid|terrified|horrified|petrified|frightened)\b',
-            # Physical reactions  
-            r'\b(shaking|trembling|shivering|goosebumps|chills|froze|frozen)\b',
-            # Atmospheric descriptions
-            r'\b(creepy|eerie|sinister|ominous|menacing|ghostly|haunting)\b',
-            # Sensory horror
-            r'\b(cold|chill|darkness|silence|shadow|whisper|moan|howl)\b',
-            # Gore and violence (mild)
-            r'\b(blood|bleeding|wound|death|dead|corpse|grave)\b'
-        ]
-        
-        for pattern in horror_patterns:
-            matches = re.findall(pattern, text, re.IGNORECASE)
-            indicators.extend([match.lower() for match in matches])
-        
-        return list(set(indicators))[:8]  # Return unique, limit to 8
     
     def calculate_dialogue_ratio(self, text: str) -> float:
         """Calculate percentage of text that is dialogue"""
@@ -278,7 +327,16 @@ class EnglishProcessor:
         return min(1.0, dialogue_chars / total_chars)
     
     def extract_keywords_nltk(self, text: str) -> List[str]:
-        """Extract keywords using NLTK"""
+        """Extract keywords using LLM-powered extraction"""
+        # Use LLaMA for keyword extraction if available
+        if self.is_initialized:
+            return asyncio.run(self._extract_keywords_llama(text))
+        
+        # Fallback to NLTK if LLaMA not available
+        return self._extract_keywords_nltk_fallback(text)
+    
+    def _extract_keywords_nltk_fallback(self, text: str) -> List[str]:
+        """Fallback NLTK-based keyword extraction"""
         if not NLTK_AVAILABLE:
             return []
         
@@ -303,9 +361,76 @@ class EnglishProcessor:
             print(f"⚠️  NLTK keyword extraction failed: {e}")
             return []
     
-    async def chunk_story_with_llama(self, story_text: str, title: str = "") -> List[EnglishChunk]:
+    async def _extract_keywords_llama(self, text: str) -> List[str]:
+        """Extract keywords using LLaMA-powered semantic analysis"""
+        try:
+            keyword_prompt = f"""[INST] You are a professional text analyst specializing in semantic keyword extraction for horror and ghost stories. Please analyze the following text and extract the most important and meaningful keywords that capture the essence of the content.
+
+Text to analyze: {text}
+
+Please extract keywords that are:
+1. Semantically important to the story
+2. Relevant for search and categorization
+3. Representative of the main themes and concepts
+4. Useful for content discovery and recommendation
+
+Avoid common stop words and focus on nouns, significant verbs, and descriptive adjectives that define the story's character.
+
+Respond in JSON format with a "keywords" array containing the most important keywords:
+{{"keywords": ["keyword1", "keyword2", ...]}}
+
+Limit to the 10 most important keywords. [/INST]"""
+            
+            # Call Ollama API
+            response = requests.post(
+                f"{self.model_config.ollama_base_url}/api/generate",
+                json={
+                    "model": self.model_name,
+                    "prompt": keyword_prompt,
+                    "stream": False,
+                    "options": {
+                        "temperature": 0.3,
+                        "top_p": 0.8,
+                        "num_predict": 300
+                    }
+                },
+                timeout=60
+            )
+            
+            if response.status_code != 200:
+                print(f"❌ Ollama API error: {response.status_code}")
+                return self._extract_keywords_nltk_fallback(text)
+            
+            result = response.json()
+            response_text = result.get('response', '').strip()
+            
+            # Parse JSON response
+            try:
+                keyword_data = json.loads(response_text)
+                keywords = keyword_data.get('keywords', [])
+                
+                # Validate and clean the results
+                valid_keywords = []
+                for keyword in keywords:
+                    if (isinstance(keyword, str) and 
+                        len(keyword.strip()) > 2 and 
+                        len(keyword) < 25 and
+                        keyword.lower() not in self.stop_words):
+                        valid_keywords.append(keyword.strip().lower())
+                
+                return valid_keywords[:10]  # Limit to top 10
+                
+            except json.JSONDecodeError:
+                print("⚠️  LLaMA keyword response not valid JSON, using NLTK fallback")
+                return self._extract_keywords_nltk_fallback(text)
+                
+        except Exception as e:
+            print(f"❌ LLaMA keyword extraction failed: {e}")
+            return self._extract_keywords_nltk_fallback(text)
+    
+    async def chunk_story_with_gpt4o(self, story_text: str, title: str = "") -> List[EnglishChunk]:
         """
-        Use LLaMA to intelligently chunk English ghost stories
+        Use GPT-4o-mini to intelligently chunk English ghost stories
         Preserves narrative structure and character development
         """
         if not self.is_initialized:
@@ -318,74 +443,65 @@ class EnglishProcessor:
             # Normalize the text first
             normalized_text = self.normalize_english_text(story_text)
             
-            # Create chunking prompt for LLaMA
-            chunking_prompt = f"""[INST] You are a professional text analyst specializing in horror stories and ghost narratives. 
-Please intelligently segment the following story to preserve narrative flow and character development.
+            # Create chunking prompt for GPT-4o-mini
+            chunking_prompt = f"""Intelligently segment the following English horror story to preserve narrative flow:
 
-Story Title: {title}
-Story Content: {normalized_text}
+Title: {title}
+Content: {normalized_text}
 
-Requirements:
-1. Each chunk should be approximately {self.chunking_config.target_chunk_size} words
-2. Break at natural paragraph or scene transitions
-3. Preserve the horror atmosphere and suspense
-4. Label each chunk type: opening/development/climax/ending
-
-Please respond in JSON format with a "chunks" array, where each chunk contains:
-- text: the chunk content
-- type: chunk type
-- order: sequence number
-- keywords: list of key terms
-
-[/INST]"""
+Requirements: ~{self.chunking_config.target_chunk_size // 4} words per chunk, natural breaks, preserve atmosphere, label chunk types"""
             
-            # Tokenize the prompt
-            inputs = self.tokenizer.encode(
-                chunking_prompt, 
-                return_tensors="pt", 
-                max_length=4096,
-                truncation=True
-            ).to(self.device)
+            # Rate limit OpenAI calls
+            # await self._rate_limit_openai_call()
             
-            # Generate response with LLaMA
-            with torch.no_grad():
-                outputs = self.model.generate(
-                    inputs,
-                    max_new_tokens=2048,
-                    temperature=self.model_config.temperature,
-                    top_p=self.model_config.top_p,
-                    do_sample=True,
-                    pad_token_id=self.tokenizer.eos_token_id
-                )
+            # Call OpenAI API with structured parsing
+            response = await asyncio.to_thread(
+                self.openai_client.chat.completions.parse,
+                model=self.model_name,
+                messages=[
+                    {"role": "system", "content": "You are a professional text analyst, please return chunking information in JSON format"},
+                    {"role": "user", "content": chunking_prompt}
+                ],
+                max_tokens=1500,  # Aligned with original English processor settings
+                temperature=0.01,
+                response_format=GPTChunkResponse
+            )
             
-            # Decode response
-            response = self.tokenizer.decode(outputs[0], skip_special_tokens=True)
-            response_text = response[len(chunking_prompt):].strip()
+            if not response or not response.choices:
+                print("❌ GPT-4o-mini API error: no response")
+                gpt_chunks = self._fallback_chunking(normalized_text)
+            else:
+                # Extract parsed data
+                chunk_data = response.choices[0].message.parsed
+                if chunk_data and chunk_data.chunks:
+                    # Convert Pydantic models to dict format
+                    gpt_chunks = []
+                    for chunk in chunk_data.chunks:
+                        gpt_chunks.append({
+                            'text': chunk.text,
+                            'type': chunk.type,
+                            'order': chunk.order,
+                            'keywords': chunk.keywords
+                        })
+                else:
+                    print("⚠️  GPT-4o-mini response empty, falling back to rule-based chunking")
+                    gpt_chunks = []
             
-            # Parse JSON response from LLaMA
-            try:
-                chunk_data = json.loads(response_text)
-                llama_chunks = chunk_data.get('chunks', [])
-            except json.JSONDecodeError:
-                print("⚠️  LLaMA response not valid JSON, falling back to rule-based chunking")
-                llama_chunks = []
-            
-            # If LLaMA chunking fails, use fallback method
-            if not llama_chunks:
-                llama_chunks = self._fallback_chunking(normalized_text)
+            # If GPT-4o-mini chunking fails, use fallback method
+            if not gpt_chunks:
+                gpt_chunks = self._fallback_chunking(normalized_text)
             
             # Process each chunk
-            for i, chunk_info in enumerate(llama_chunks):
+            for i, chunk_info in enumerate(gpt_chunks):
                 chunk_text = chunk_info.get('text', '').strip()
                 if not chunk_text:
                     continue
                 
-                # Extract metadata
-                narrative_elements = self.extract_narrative_elements(chunk_text)
-                horror_indicators = self.extract_horror_indicators(chunk_text)
+                # Budget optimization: Use only essential metadata
                 keywords = chunk_info.get('keywords', [])
-                if not keywords:  # Fallback keyword extraction
-                    keywords = self.extract_keywords_nltk(chunk_text)
+                # Skip additional keyword extraction to save on API costs
+                # if not keywords:  # Fallback keyword extraction
+                #     keywords = self.extract_keywords_nltk(chunk_text)
                 
                 # Calculate metrics
                 word_count = len(chunk_text.split())
@@ -395,29 +511,25 @@ Please respond in JSON format with a "chunks" array, where each chunk contains:
                 chunk = EnglishChunk(
                     chunk_id=f"en_chunk_{i+1}",
                     original_text=chunk_text,
-                    processed_text=chunk_text,  # Already normalized
+                    normalized_text=chunk_text,  # Already normalized
                     chunk_order=i + 1,
                     chunk_type=chunk_info.get('type', 'body').lower(),
+                    character_count=len(chunk_text),  # Added for consistency
                     word_count=word_count,
                     sentence_count=sentence_count,
                     semantic_keywords=keywords[:10],  # Limit to top 10
-                    narrative_elements=narrative_elements[:8],  # Limit to top 8
-                    horror_indicators=horror_indicators[:8],  # Limit to top 8
                     dialogue_ratio=dialogue_ratio,
                     processing_metadata={
-                        'model_used': 'llama3.2',
+                        'model_used': 'gpt-4o-mini',
                         'processing_time': (datetime.now() - start_time).total_seconds(),
                         'normalization_applied': True,
-                        'keyword_extraction_method': 'nltk' if NLTK_AVAILABLE else 'regex'
+                        'keyword_extraction_method': 'gpt4o' if self.is_initialized else ('nltk' if NLTK_AVAILABLE else 'regex')
                     }
                 )
                 
                 chunks.append(chunk)
             
-            # Calculate cost (estimate based on tokens)
-            total_tokens = len(inputs[0]) + sum(len(self.tokenizer.encode(chunk.processed_text)) for chunk in chunks)
-            estimated_cost = self._calculate_processing_cost(total_tokens)
-            self.total_cost += estimated_cost
+            # Processing completed successfully
             
             processing_time_ms = int((datetime.now() - start_time).total_seconds() * 1000)
             
@@ -494,14 +606,13 @@ Please respond in JSON format with a "chunks" array, where each chunk contains:
             chunk = EnglishChunk(
                 chunk_id=f"en_emergency_{chunk_id}",
                 original_text=chunk_text,
-                processed_text=chunk_text,
+                normalized_text=chunk_text,  # Updated field name
                 chunk_order=chunk_id,
                 chunk_type='body',
+                character_count=len(chunk_text),  # Added for consistency
                 word_count=len(chunk_words),
                 sentence_count=chunk_text.count('.') + chunk_text.count('!') + chunk_text.count('?'),
                 semantic_keywords=[],
-                narrative_elements=[],
-                horror_indicators=[],
                 dialogue_ratio=0.0,
                 processing_metadata={
                     'model_used': 'emergency_fallback',
@@ -515,11 +626,6 @@ Please respond in JSON format with a "chunks" array, where each chunk contains:
         
         return chunks
     
-    def _calculate_processing_cost(self, total_tokens: int) -> float:
-        """Calculate estimated processing cost for LLaMA usage"""
-        # Estimated cost per 1K tokens (adjust based on actual pricing)
-        cost_per_1k_tokens = 0.003  # $0.003 per 1K tokens (estimate for LLaMA)
-        return (total_tokens / 1000) * cost_per_1k_tokens
     
     async def process_story(self, story_text: str, title: str = "", metadata: Dict = None) -> ProcessingResult:
         """
@@ -536,8 +642,8 @@ Please respond in JSON format with a "chunks" array, where each chunk contains:
         start_time = datetime.now()
         
         try:
-            # Chunk the story using LLaMA
-            chunks = await self.chunk_story_with_llama(story_text, title)
+            # Chunk the story using GPT-4o-mini
+            chunks = await self.chunk_story_with_gpt4o(story_text, title)
             
             processing_time_ms = int((datetime.now() - start_time).total_seconds() * 1000)
             
@@ -549,26 +655,19 @@ Please respond in JSON format with a "chunks" array, where each chunk contains:
                  processing_time_ms) / self.processing_stats['total_processed']
             )
             
-            # Calculate total cost for this processing
-            total_cost = sum(
-                self._calculate_processing_cost(chunk.word_count * 1.3)  # Estimate tokens from words
-                for chunk in chunks
-            )
+            # Processing completed
             
             result = ProcessingResult(
                 success=True,
                 chunks=chunks,
                 processing_time_ms=processing_time_ms,
-                model_cost=total_cost,
                 metadata={
                     'language': 'en',
                     'total_words': len(story_text.split()),
                     'chunks_generated': len(chunks),
-                    'model_used': 'llama3.2',
+                    'model_used': 'gpt-4o-mini',
                     'normalization_applied': True,
-                    'avg_dialogue_ratio': sum(chunk.dialogue_ratio for chunk in chunks) / len(chunks) if chunks else 0,
-                    'narrative_elements_found': sum(len(chunk.narrative_elements) for chunk in chunks),
-                    'horror_indicators_found': sum(len(chunk.horror_indicators) for chunk in chunks)
+                    'avg_dialogue_ratio': sum(chunk.dialogue_ratio for chunk in chunks) / len(chunks) if chunks else 0
                 }
             )
             
@@ -584,30 +683,23 @@ Please respond in JSON format with a "chunks" array, where each chunk contains:
                 success=False,
                 chunks=[],
                 processing_time_ms=int((datetime.now() - start_time).total_seconds() * 1000),
-                model_cost=0.0,
                 error_message=error_msg
             )
     
     def get_processing_stats(self) -> Dict:
         """Get comprehensive processing statistics"""
         return {
-            'processor_type': 'english_llama',
-            'model_name': 'llama3.2',
-            'device': self.device,
+            'processor_type': 'english_gpt4o_openai',
+            'model_name': 'gpt-4o-mini',
+            'openai_api': 'openai',
             'is_initialized': self.is_initialized,
-            'total_cost': self.total_cost,
             'processing_stats': self.processing_stats,
-            'nltk_available': NLTK_AVAILABLE,
-            'transformers_available': TRANSFORMERS_AVAILABLE
+            'nltk_available': NLTK_AVAILABLE
         }
     
     async def cleanup(self):
         """Cleanup resources"""
-        if self.model:
-            del self.model
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-        
+        # No model cleanup needed for OpenAI API
         print("🧹 English processor resources cleaned up")
 
 
@@ -649,14 +741,11 @@ async def main():
                 print(f"\n✅ Processing successful:")
                 print(f"   Chunks generated: {len(result.chunks)}")
                 print(f"   Processing time: {result.processing_time_ms}ms")
-                print(f"   Estimated cost: ${result.model_cost:.4f}")
                 
                 for i, chunk in enumerate(result.chunks[:3]):  # Show first 3 chunks
                     print(f"\n📝 Chunk {i+1} ({chunk.chunk_type}):")
-                    print(f"   Text: {chunk.processed_text[:100]}...")
+                    print(f"   Text: {chunk.normalized_text[:100]}...")
                     print(f"   Keywords: {chunk.semantic_keywords}")
-                    print(f"   Narrative elements: {chunk.narrative_elements}")
-                    print(f"   Horror indicators: {chunk.horror_indicators}")
                     print(f"   Dialogue ratio: {chunk.dialogue_ratio:.2%}")
             else:
                 print(f"❌ Processing failed: {result.error_message}")

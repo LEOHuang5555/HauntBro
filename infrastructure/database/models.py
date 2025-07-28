@@ -77,6 +77,7 @@ class SilverStory(Base):
     tags = Column(ARRAY(String))
     reading_time_minutes = Column(Integer)
     word_count = Column(Integer)
+    language_detected = Column(String(10))  # 'zh', 'en', 'mixed'
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     
     # Relationships
@@ -162,7 +163,7 @@ class User(Base):
 
 
 class UserFavorite(Base):
-    """User bookmarks."""
+    """User bookmarks - simplified for MVP."""
     
     __tablename__ = 'user_favorites'
     
@@ -170,7 +171,6 @@ class UserFavorite(Base):
     user_id = Column(PostgresUUID(as_uuid=True), ForeignKey('users.id', ondelete='CASCADE'), nullable=False)
     story_id = Column(PostgresUUID(as_uuid=True), ForeignKey('bronze_stories.id', ondelete='CASCADE'), nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
-    notes = Column(Text)
     
     # Relationships
     user = relationship("User", back_populates="favorites")
@@ -222,21 +222,18 @@ class StoryRating(Base):
 # =============================================================================
 
 class SearchInteraction(Base):
-    """Search analytics and user interactions."""
+    """Search analytics - simplified for MVP."""
     
     __tablename__ = 'search_interactions'
     
     id = Column(PostgresUUID(as_uuid=True), primary_key=True, default=uuid4)
     user_id = Column(PostgresUUID(as_uuid=True), ForeignKey('users.id', ondelete='SET NULL'))
-    session_id = Column(PostgresUUID(as_uuid=True))
     query = Column(Text, nullable=False)
     search_timestamp = Column(DateTime(timezone=True), server_default=func.now())
     
-    # Interaction data
-    results_shown = Column(ARRAY(PostgresUUID))
-    results_clicked = Column(ARRAY(PostgresUUID))
-    click_positions = Column(ARRAY(Integer))
-    time_to_first_click = Column(Integer)
+    # Basic interaction tracking
+    results_count = Column(Integer, default=0)
+    clicked_story_id = Column(PostgresUUID(as_uuid=True))  # First clicked result
     
     # Search performance
     search_type = Column(String(50), default='hybrid')
@@ -249,7 +246,6 @@ class SearchInteraction(Base):
     __table_args__ = (
         CheckConstraint("search_type IN ('keyword', 'semantic', 'hybrid')", name='valid_search_type'),
         Index('idx_search_interactions_user_id', 'user_id'),
-        Index('idx_search_interactions_session_id', 'session_id'),
         Index('idx_search_interactions_timestamp', 'search_timestamp'),
         Index('idx_search_interactions_query', 'query'),
     )
@@ -259,7 +255,7 @@ class SearchInteraction(Base):
 
 
 class UserReadingBehavior(Base):
-    """Reading behavior analytics."""
+    """Reading behavior analytics - simplified for MVP."""
     
     __tablename__ = 'user_reading_behavior'
     
@@ -269,13 +265,7 @@ class UserReadingBehavior(Base):
     
     reading_start_time = Column(DateTime(timezone=True), server_default=func.now())
     reading_duration = Column(Integer)  # Seconds
-    return_visits = Column(Integer, default=1)
-    favorited = Column(Boolean, default=False)
-    shared = Column(Boolean, default=False)
-    
-    # Engagement metrics
-    scroll_depth = Column(Float)  # Percentage of content viewed
-    bounce_rate = Column(Boolean, default=False)  # Left immediately
+    completed_reading = Column(Boolean, default=False)  # Finished the story
     
     # Relationships
     user = relationship("User", back_populates="reading_behaviors")
@@ -303,7 +293,7 @@ class BronzeStoryProcessing(Base):
     
     story_id = Column(PostgresUUID(as_uuid=True), ForeignKey('bronze_stories.id', ondelete='CASCADE'), primary_key=True)
     processing_status = Column(String(20), default='pending')  # pending, processing, completed, failed
-    etl_run_id = Column(String(100))  # Airflow run ID for lineage tracking
+    etl_run_id = Column(PostgresUUID(as_uuid=True))  # ETL run ID for lineage tracking
     quality_checks = Column(JSONB)  # Great Expectations results
     processing_metadata = Column(JSONB)  # ETL metrics and timings
     error_message = Column(Text)  # Error details for failed processing
@@ -328,37 +318,31 @@ class BronzeStoryProcessing(Base):
 
 
 class SilverStoryChunks(Base):
-    """Enhanced chunk model with embedding metadata for medallion architecture"""
+    """Simplified chunk model for MVP - aligned with processor output"""
     
     __tablename__ = 'silver_story_chunks'
     
     id = Column(PostgresUUID(as_uuid=True), primary_key=True, default=uuid4)
     story_id = Column(PostgresUUID(as_uuid=True), ForeignKey('bronze_stories.id', ondelete='CASCADE'), nullable=False)
-    chunk_text = Column(Text, nullable=False)  # Main chunk content for embedding
-    chunk_context = Column(Text, nullable=False)  # Extended context around chunk
+    chunk_text = Column(Text, nullable=False)  # Main chunk content
     chunk_order = Column(Integer, nullable=False)  # Sequential position in story
-    chunk_type = Column(String(20))  # 'opening', 'body', 'climax', 'ending'
+    chunk_type = Column(String(20))  # 'opening', 'development', 'body', 'climax', 'ending'
     
-    # Overlap management
-    overlap_start = Column(Integer, default=0)  # Characters overlapping with previous
-    overlap_end = Column(Integer, default=0)  # Characters overlapping with next
+    # Chunk metrics
+    character_count = Column(Integer, nullable=False)  # Character count
+    word_count = Column(Integer, nullable=False)  # Word count
+    sentence_count = Column(Integer, default=0)  # Sentence count (English only)
     
-    # Vector embeddings (requires pgvector extension)
-    content_embedding = Column(Text)  # Dense vector for similarity search (stored as text for now)
-    search_embedding = Column(Text)  # Optimized vector for search queries (stored as text for now)
+    # Extracted content
+    semantic_keywords = Column(ARRAY(String))  # Keywords from Jieba
     
-    # Metadata
-    chunk_length = Column(Integer, nullable=False)  # Character count of chunk_text
-    chunk_word_count = Column(Integer, default=0)  # Word count of chunk_text
-    semantic_keywords = Column(ARRAY(String))  # Extracted key terms/entities
+    # Processing metadata
+    processing_language = Column(String(10))  # 'zh', 'en'
+    model_used = Column(String(50))  # 'gpt-4o-mini'
     
-    # Model tracking for medallion architecture
-    embedding_model = Column(String(100), nullable=False)  # 'text-embedding-ada-002', etc.
-    embedding_version = Column(String(20), nullable=False)  # '2023-12-01', etc.
-    embedding_model_version = Column(String(50))  # Track model versions
-    processing_language = Column(String(10))  # 'zh', 'en', 'mixed'
-    chunk_quality_score = Column(Float)  # Quality assessment per chunk
-    embedding_cost = Column(Float)  # Cost tracking for optimization
+    # Embedding fields for semantic search
+    content_embedding = Column(Text)  # JSON-encoded embedding vector
+    search_embedding = Column(Text)  # JSON-encoded search embedding vector
     
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     
@@ -368,77 +352,54 @@ class SilverStoryChunks(Base):
     # Constraints
     __table_args__ = (
         CheckConstraint("chunk_order > 0", name='valid_chunk_order'),
-        CheckConstraint("chunk_length > 0", name='valid_chunk_length'),
-        CheckConstraint("chunk_word_count >= 0", name='valid_word_count'),
-        CheckConstraint("chunk_quality_score >= 0.0 AND chunk_quality_score <= 1.0", name='valid_quality_score'),
-        CheckConstraint("processing_language IN ('zh', 'en', 'mixed', 'unknown')", name='valid_language'),
+        CheckConstraint("character_count > 0", name='valid_character_count'),
+        CheckConstraint("word_count >= 0", name='valid_word_count'),
+        CheckConstraint("processing_language IN ('zh', 'en')", name='valid_language'),
         Index('idx_silver_chunks_story_id', 'story_id'),
         Index('idx_silver_chunks_order', 'story_id', 'chunk_order'),
         Index('idx_silver_chunks_language', 'processing_language'),
-        Index('idx_silver_chunks_quality', 'chunk_quality_score'),
-        Index('idx_silver_chunks_embedding_model', 'embedding_model_version'),
+        Index('idx_silver_chunks_type', 'chunk_type'),
         Index('idx_silver_chunks_created_at', 'created_at'),
     )
     
     def __repr__(self):
-        return f"<SilverStoryChunks(id={self.id}, story_id={self.story_id}, order={self.chunk_order})>"
+        return f"<SilverStoryChunks(id={self.id}, story_id={self.story_id}, order={self.chunk_order}, type={self.chunk_type})>"
 
 
 class GoldLayerMetrics(Base):
-    """Business intelligence aggregations for medallion architecture"""
+    """Essential business metrics for MVP"""
     
     __tablename__ = 'gold_layer_metrics'
     
     id = Column(PostgresUUID(as_uuid=True), primary_key=True, default=uuid4)
-    metric_type = Column(String(50), nullable=False)  # 'daily_summary', 'user_behavior', 'content_performance'
     metric_date = Column(DateTime(timezone=True), nullable=False)  # Date for the metric calculation
-    source_platform = Column(String(20))  # 'ptt', 'reddit', 'combined'
     
-    # Aggregated metrics
-    total_stories_processed = Column(Integer, default=0)
-    total_chunks_generated = Column(Integer, default=0)
-    avg_quality_score = Column(Float)
-    total_embeddings_cost = Column(Float)
-    processing_time_minutes = Column(Integer)
-    
-    # User engagement metrics
+    # Core metrics
+    total_stories = Column(Integer, default=0)
+    total_users = Column(Integer, default=0)
     total_searches = Column(Integer, default=0)
-    unique_users = Column(Integer, default=0)
-    avg_session_duration = Column(Float)
-    bounce_rate = Column(Float)
+    total_favorites = Column(Integer, default=0)
     
-    # Content performance metrics
-    top_performing_stories = Column(ARRAY(PostgresUUID))  # Story IDs with highest engagement
-    trending_keywords = Column(ARRAY(String))  # Most searched keywords
-    language_distribution = Column(JSONB)  # Language breakdown statistics
+    # Language breakdown
+    chinese_stories = Column(Integer, default=0)
+    english_stories = Column(Integer, default=0)
     
-    # Business metrics
-    conversion_rate = Column(Float)  # Free to premium conversion
-    revenue_attribution = Column(Float)  # Revenue attributed to this period
-    user_lifetime_value = Column(Float)  # Average LTV for users in this period
-    
-    # ETL metadata
-    etl_run_id = Column(String(100))  # Airflow run ID that generated this metric
-    data_freshness_minutes = Column(Integer)  # How fresh is the underlying data
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     
     # Constraints
     __table_args__ = (
-        CheckConstraint("metric_type IN ('daily_summary', 'user_behavior', 'content_performance', 'business_kpis')", name='valid_metric_type'),
-        CheckConstraint("source_platform IN ('ptt', 'reddit', 'combined')", name='valid_source_platform'),
-        CheckConstraint("total_stories_processed >= 0", name='valid_stories_count'),
-        CheckConstraint("total_chunks_generated >= 0", name='valid_chunks_count'),
-        CheckConstraint("avg_quality_score >= 0.0 AND avg_quality_score <= 1.0", name='valid_avg_quality'),
-        UniqueConstraint('metric_type', 'metric_date', 'source_platform', name='unique_metric'),
-        Index('idx_gold_metrics_type', 'metric_type'),
+        CheckConstraint("total_stories >= 0", name='valid_stories_count'),
+        CheckConstraint("total_users >= 0", name='valid_users_count'),
+        CheckConstraint("total_searches >= 0", name='valid_searches_count'),
+        CheckConstraint("chinese_stories >= 0", name='valid_chinese_count'),
+        CheckConstraint("english_stories >= 0", name='valid_english_count'),
+        UniqueConstraint('metric_date', name='unique_daily_metric'),
         Index('idx_gold_metrics_date', 'metric_date'),
-        Index('idx_gold_metrics_platform', 'source_platform'),
-        Index('idx_gold_metrics_etl_run', 'etl_run_id'),
         Index('idx_gold_metrics_created_at', 'created_at'),
     )
     
     def __repr__(self):
-        return f"<GoldLayerMetrics(id={self.id}, type='{self.metric_type}', date={self.metric_date})>"
+        return f"<GoldLayerMetrics(id={self.id}, date={self.metric_date}, stories={self.total_stories})>"
 
 
 # =============================================================================

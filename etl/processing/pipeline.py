@@ -7,7 +7,7 @@ from chunking import StoryChunker, ChunkConfig, StoryChunk
 from embedding import EmbeddingGenerator
 from database import DatabaseManager
 from quality_score import assess_content_quality
-from config import CONFIG
+from etl.config.config import CONFIG
 
 class ChunkingPipeline:
     """Main orchestrator for the story chunking pipeline"""
