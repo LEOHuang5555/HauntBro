@@ -9,7 +9,7 @@ echo "Waiting for Ollama to start..."
 sleep 10
 
 # Pull models
-MODELS="${OLLAMA_MODELS:-llama3.2 deepseek-coder}"
+MODELS="${OLLAMA_MODELS:-llama3.2}"
 for MODEL in $MODELS; do
     echo "Pulling model: $MODEL"
     ollama pull $MODEL || echo "Failed to pull $MODEL"

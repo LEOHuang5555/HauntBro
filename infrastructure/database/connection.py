@@ -23,6 +23,8 @@ class DatabaseManager:
     def __init__(self, database_url: str = None):
         """Initialize database manager with connection URL."""
         self.database_url = database_url or self._get_database_url()
+        if not self.database_url:
+            raise ValueError("Please setup your database url in .env file!")
         self.engine = create_engine(
             self.database_url,
             poolclass=StaticPool,
@@ -35,8 +37,7 @@ class DatabaseManager:
         """Get database URL from environment variables."""
         # Default to the existing connection string from the original file
         return os.getenv(
-            'DATABASE_URL',
-            'postgresql+psycopg2://hbadmin:dj3jkp2jmrkfmlkweq@localhost/hbrawdata'
+            'DATABASE_URL', ''
         )
     
     def create_tables(self):
