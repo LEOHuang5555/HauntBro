@@ -16,7 +16,7 @@ sys.path.append(str(project_root))
 
 from backend.app.websocket.manager import websocket_manager
 from backend.app.core.security import security_service
-from backend.app.core.auth import AuthenticationService
+from backend.app.core.auth import AuthService
 from infrastructure.database.connection import get_db
 from infrastructure.database.models import User
 
@@ -46,7 +46,7 @@ async def authenticate_websocket(
             return None
         
         # Get user from database
-        auth_service = AuthenticationService(db)
+        auth_service = AuthService(db)
         user = await auth_service.get_user_by_id(user_id)
         
         if not user or not user.is_active:

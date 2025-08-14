@@ -45,9 +45,11 @@ The ETL pipeline implements a three-layer medallion architecture:
 - `check_etl_health.py` - Infrastructure health checks and Docker validation (also listed above)
 
 ### Language Processing Models
-- **Chinese**: DeepSeek models via Ollama (port 11434)
-- **English**: LLaMA models via Ollama (port 11434)
+- **Chinese**: GPT-4o-mini via OpenAI API with DeepSeek fallback
+- **English**: GPT-4o-mini via OpenAI API with LLaMA fallback  
+- **Factory Pattern**: Unified language processor factory for extensibility
 - **Embeddings**: Multi-model approach with cost optimization
+- **RAG Search**: Conversational AI-powered story discovery
 
 ## 🚀 Quick Start
 
@@ -124,12 +126,13 @@ python etl/processing/scripts/run_bronze_to_silver_etl.py
 
 **Features:**
 - ✅ Automatic language detection (Chinese/English)
-- ✅ DeepSeek model for Chinese text processing
-- ✅ LLaMA model for English text processing
+- ✅ Factory pattern for language processor extensibility
+- ✅ GPT-4o-mini for enhanced text processing with fallbacks
 - ✅ Multi-model embedding generation with cost optimization
 - ✅ Quality assessment and filtering
 - ✅ Real-time progress monitoring
 - ✅ Comprehensive error handling and retry logic
+- ✅ RAG-powered conversational search API
 
 ### Silver → Gold Processing
 
@@ -156,6 +159,45 @@ python etl/processing/scripts/run_silver_to_gold_etl.py --days 30
 - ✅ Cost analysis and optimization recommendations
 - ✅ Data quality validation
 - ✅ Automated insights generation
+
+## 🤖 RAG Search API
+
+### Conversational Story Discovery
+
+The enhanced search API now includes RAG (Retrieval-Augmented Generation) capabilities:
+
+```bash
+# Example RAG queries via API
+curl -X POST "http://localhost:8000/api/v1/search/ask" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "question": "What are common themes in Chinese ghost stories?",
+    "language": "auto"
+  }'
+
+curl -X POST "http://localhost:8000/api/v1/search/ask" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "question": "Can you recommend stories with haunted house elements?",
+    "conversation_history": [
+      {"type": "question", "content": "What themes do you have?"},
+      {"type": "answer", "content": "We have supernatural, psychological horror..."}
+    ]
+  }'
+```
+
+**RAG Features:**
+- ✅ Conversational AI responses with source citations  
+- ✅ Semantic search with relevance scoring
+- ✅ Multi-language support (Chinese/English)
+- ✅ Conversation history for context
+- ✅ Follow-up question suggestions
+- ✅ Confidence scoring for answers
+
+**Available Endpoints:**
+- `POST /api/v1/search/ask` - RAG question answering
+- `GET /api/v1/search/ask/examples` - Example questions
+- `GET /api/v1/search/health` - Service health with RAG status
 
 ## 🧪 Testing & Validation
 
@@ -235,7 +277,7 @@ docker exec airflow-webserver airflow tasks log hauntbro_etl_pipeline run_bronze
 
 ### Model Configuration
 
-Configure language models in `etl/processing/config.py`:
+Configure language models in `etl/config/config.py`:
 
 ```python
 @dataclass
@@ -245,6 +287,19 @@ class ModelConfig:
     chinese_model: str = "deepseek-coder"
     temperature: float = 0.3
     top_p: float = 0.9
+
+# Factory pattern usage
+from etl.models import LanguageProcessorFactory, process_text
+
+# Auto-detect language and process
+result = await process_text(
+    text="Your story content here",
+    title="Story Title"  
+)
+
+# Or specify language explicitly
+processor = await LanguageProcessorFactory.create_and_initialize_processor('zh')
+result = await processor.process_story(chinese_text, title)
 ```
 
 ### Processing Limits
