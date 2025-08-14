@@ -7,12 +7,12 @@ Implement a production-ready FastAPI backend that serves as the central API gate
 
 ### Context Analysis from Existing Codebase
 **Existing Foundation (80% of Infrastructure Ready):**
-- ✅ **Database Models**: Comprehensive User, Story, Analytics models in `examples/infrastructure/database/models.py`
-- ✅ **Async Database Management**: Production-ready `DatabaseManager` with async patterns in `examples/infrastructure/database/connection.py`
-- ✅ **Configuration System**: Dataclass-based config in `examples/etl/processing/config.py`
-- ✅ **Embedding & Search**: Multi-language embedding system in `examples/etl/models/embedding_manager.py`
-- ✅ **Analytics Framework**: Real-time metrics dashboard in `examples/monitoring/metrics_dashboard.py`
-- ✅ **Background Processing**: Async pipeline patterns in `examples/etl/processing/pipeline.py`
+- ✅ **Database Models**: Comprehensive User, Story, Analytics models in `infrastructure/database/models.py`
+- ✅ **Async Database Management**: Production-ready `DatabaseManager` with async patterns in `infrastructure/database/connection.py`
+- ✅ **Configuration System**: Dataclass-based config in `etl/processing/config.py`
+- ✅ **Embedding & Search**: Multi-language embedding system in `etl/models/embedding_manager.py`
+- ✅ **Analytics Framework**: Real-time metrics dashboard in `monitoring/metrics_dashboard.py`
+- ✅ **Background Processing**: Async pipeline patterns in `etl/processing/pipeline.py`
 - ✅ **Poetry Dependencies**: FastAPI, SQLAlchemy, Pydantic already configured in `pyproject.toml`
 
 **Key Integration Opportunities:**
@@ -21,6 +21,7 @@ Implement a production-ready FastAPI backend that serves as the central API gate
 - Use existing `MetricsCollector` for API analytics
 - Leverage existing `EmbeddingManager` for search endpoints
 - Follow existing async patterns for WebSocket implementation
+- Follow RESTful API design principle when developing APIs
 
 ## EXTERNAL RESEARCH INTEGRATION
 
