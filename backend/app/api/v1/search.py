@@ -19,6 +19,7 @@ from infrastructure.database.models import User
 from backend.app.core.auth import get_current_user_optional, get_current_user
 from backend.app.core.search import SearchService, get_search_service
 from backend.app.core.schemas import SearchRequest, MessageResponse
+from search.rag_engine import get_rag_engine
 
 logger = logging.getLogger(__name__)
 
@@ -288,6 +289,107 @@ async def get_trending_searches(
         }
 
 
+@router.post(
+    "/ask",
+    summary="RAG Question Answering",
+    description="Ask questions about horror stories and get AI-powered answers with source citations"
+)
+async def ask_rag_question(
+    request: dict,  # Flexible schema for RAG requests
+    current_user: Optional[User] = Depends(get_current_user_optional),
+    db: Session = Depends(get_db)
+) -> Any:
+    """
+    Ask questions about horror stories using RAG (Retrieval-Augmented Generation)
+    
+    - **question**: Your question about horror stories, themes, or specific content
+    - **language**: Language hint (zh, en, auto) - optional
+    - **conversation_history**: Previous conversation turns for context - optional
+    """
+    try:
+        question = request.get("question", "")
+        if not question or not question.strip():
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Question is required"
+            )
+        
+        language = request.get("language", "auto")
+        conversation_history = request.get("conversation_history", [])
+        
+        # Get RAG engine
+        rag_engine = await get_rag_engine()
+        
+        # Process the question
+        result = await rag_engine.query(
+            question=question.strip(),
+            db_session=db,
+            language=language,
+            conversation_history=conversation_history
+        )
+        
+        # Add follow-up suggestions
+        if result.get("sources"):
+            suggestions = await rag_engine.suggest_follow_up_questions(
+                question, result["sources"]
+            )
+            result["follow_up_suggestions"] = suggestions
+        else:
+            result["follow_up_suggestions"] = []
+        
+        # Add user context
+        result["user_authenticated"] = current_user is not None
+        
+        return result
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"RAG question answering error: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to process question"
+        )
+
+
+@router.get(
+    "/ask/examples",
+    summary="RAG Question Examples",
+    description="Get example questions that work well with the RAG system"
+)
+async def get_rag_examples() -> Any:
+    """
+    Get example questions that work well with the RAG system
+    """
+    examples = {
+        "general_questions": [
+            "What are the common themes in ghost stories?",
+            "How do horror stories typically create suspense?",
+            "What makes a good horror story ending?"
+        ],
+        "specific_questions": [
+            "Are there stories about haunted houses?",
+            "What stories feature supernatural encounters?",
+            "Can you recommend stories with psychological horror elements?"
+        ],
+        "comparative_questions": [
+            "How do Chinese ghost stories differ from Western ones?",
+            "What are the cultural elements in traditional horror stories?",
+            "How has horror storytelling evolved over time?"
+        ]
+    }
+    
+    return {
+        "examples": examples,
+        "tips": [
+            "Be specific about what you're looking for",
+            "Ask about themes, characters, or story elements",
+            "Feel free to ask follow-up questions for deeper exploration",
+            "The system works better with questions about content rather than technical details"
+        ]
+    }
+
+
 @router.get(
     "/health",
     summary="Search service health",
@@ -302,6 +404,16 @@ async def search_health(
     try:
         await search_service.initialize()
         
+        # Check RAG engine health
+        rag_available = False
+        rag_initialized = False
+        try:
+            rag_engine = await get_rag_engine()
+            rag_available = True
+            rag_initialized = rag_engine.is_initialized
+        except Exception as e:
+            logger.warning(f"RAG engine check failed: {e}")
+        
         health_status = {
             "status": "healthy",
             "timestamp": datetime.now().isoformat(),
@@ -309,11 +421,18 @@ async def search_health(
                 "keyword_search": True,
                 "semantic_search": search_service.embedding_manager is not None,
                 "hybrid_search": True,
-                "search_analytics": True
+                "search_analytics": True,
+                "rag_qa": rag_initialized,
+                "conversational_search": rag_initialized
             },
             "embedding_manager": {
                 "available": search_service.embedding_manager is not None,
                 "initialized": search_service.embedding_manager is not None
+            },
+            "rag_engine": {
+                "available": rag_available,
+                "initialized": rag_initialized,
+                "openai_available": rag_initialized
             }
         }
         
